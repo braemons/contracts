@@ -101,10 +101,22 @@ GET  /api/trial/result                 → the last completed trial
 graph, timings and a reward duration; it cannot tell a go trial from a catch
 trial. That omission is what keeps firmware stable while paradigms change.
 
-**Gap: triald cannot name a graph.** `TrialParameters` in `behaviour.py` carries
-`trial_id` and `reward_ms` and nothing else. Trial types have no `graph` field,
-and where graphs live in triald is still open — `statemachined/dev/PLAN.md`
-open question 1. See §9.2.
+**triald can name a graph** (settled, §9.2, built). `TrialType.graph` is a
+name, carried through `TrialSpec` into the record and out through
+`TrialParameters.graph`. It replaced `TrialType.time_sequence`, a bare index
+triald never read: an index points at a different machine the moment the
+executor's store is edited, which is the disease sets were cured of in VStim
+#239. Empty means "leave whatever is loaded".
+
+**triald holds no graphs and validates nothing about the name.** The executor
+owns the store and refuses a name it does not have — a configuration error
+triald can report, rather than a trial that quietly ran the wrong machine. Where
+statemachined keeps the store is its own business, and the name never reaches
+the firmware as a name: the daemon resolves it.
+
+**Still missing: triald's outbound client.** Nothing in triald posts to
+`/api/trial/configure` yet; `TrialParameters` is handed to a `BehaviourSource`,
+and the only implementation is the simulator. §10 item 5.
 
 ### B — statemachined reports the outcome to triald
 
@@ -186,6 +198,7 @@ Not interactions in the sense above — no request, no reply, no schema to revie
 | Step | Where | |
 |---|---|---|
 | triald picks a trial | `session.next_trial()`, `POST /api/trial/next` | ✅ |
+| triald names the graph for it | `TrialType.graph` → `TrialSpec` → `TrialParameters` | ✅ |
 | triald configures statemachined | — | ❌ no client in triald |
 | statemachined arms the device | `POST /api/trial/configure` | ✅ |
 | start · cancel · result | `api/trial_routes.py` | ✅ |
@@ -365,8 +378,9 @@ use — so this is also the first test of the loop a rig actually runs.
 
 ### Stage 2 — triald initiates
 
-Once triald has an outbound client and trial types can name a graph (§9.2), flip
-the test so triald drives all three steps. This is the loop as described in §2.
+Trial types can name a graph now (§9.2). Once triald has an outbound client,
+flip the test so triald drives all three steps. This is the loop as described in
+§2.
 
 ### Stage 3 — vstimd
 
@@ -382,10 +396,13 @@ starts to earn itself**, and not before.
    what makes `triald sim` exercise the real accounting), but `runner.run_trial()`
    calling it is the real trial loop only by accident. Decide whether
    `run_trial` becomes simulator-only or is replaced by the API path.
-2. **Where do graphs live in triald?** A `graph` field on `TrialType`, or a
-   separate store addressed by name that trial types reference?
-   `statemachined/dev/PLAN.md` open question 1. Interaction A cannot be built
-   until this is answered — **it is the blocking decision for stage 2.**
+2. ~~**Where do graphs live in triald?**~~ **Settled: nowhere.** A trial type
+   carries a graph *name* and nothing more; the graphs themselves live in the
+   executor's store. triald has no opinion about where one sits in that store
+   and never validates the name — an index would be a second, silent identity
+   for the same thing, and triald owning graph bodies would make it the hub the
+   family is built to avoid. Built in triald (`TrialType.graph`, replacing
+   `time_sequence`). What remains of item 5 is the outbound client.
 3. **`start_source`.** `configure` takes `"serial"` or `"ttl"`. On a rig it
    should be `ttl` so reaction times need no clock sync; `serial` is the
    desk-testing path. Confirm the default per deployment, and whether triald
@@ -405,7 +422,7 @@ starts to earn itself**, and not before.
 | 2 | `trial_id` on triald's `OutcomeReport`, required, and refused when it is not the trial in flight | — |
 | 3 | The OpenAPI conformance test in statemachined (§7) | 2 |
 | 4 | **Stage 1 e2e** | 1, 2 |
-| 5 | Answer §9.2; a `graph` on the trial type; triald's outbound client | §9.2 |
+| 5 | ~~Answer §9.2; a `graph` on the trial type~~ **done**; triald's outbound client | — |
 | 6 | **Stage 2 e2e** — triald initiates | 5 |
 | 7 | `mdns.md`; `rig=` in both daemons; vstimd's TXT records and web port | — |
 | 8 | §3C: the vstimd message, and per-trial or windowed frame-loss accounting | §9.6 |
