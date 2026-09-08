@@ -269,7 +269,9 @@ Not interactions in the sense above — no request, no reply, no schema to revie
 | triald counts, accepts, records | `session.report_outcome()`, `recording.py` | ✅ |
 | triald configures vstimd | — | ❌ neither side |
 | vstimd broadcasts frame loss | `WS`-less: ZMQ PUB, `events.proto` | ✅ `0.2` |
-| triald subscribes to vstimd | — | ❌ the last gap |
+| triald joins frame loss to a trial | `triald.stimulus` | ✅ |
+| a client subscribes to the stream | `vstimd.events` (vstimd-client) | ✅ |
+| triald wires the two together | — | ❌ the last gap |
 | readiness gate `configure→ready→start` | designed, `triald/dev/PLAN.md` | ❌ not built |
 
 ## 5. Three defects, all in interaction B
@@ -628,7 +630,7 @@ starts to earn itself**, and not before.
 | 5 | ~~Answer §9.2; a `graph` on the trial type; triald's outbound client~~ **done** | — |
 | 6 | ~~**Stage 2 e2e** — triald initiates~~ **done** (10 tests, `make test-e2e`) | — |
 | 7 | `mdns.md`; `rig=` in both daemons; vstimd's TXT records and web port | — |
-| 8 | ~~§3C: vstimd's event stream~~ **done** on vstimd `0.2`; triald's subscriber remains | — |
+| 8 | ~~§3C: vstimd's event stream; the client subscriber; triald's join~~ **done**; wiring them in triald remains | — |
 | 9 | **Stage 3 e2e**, and decide whether `rig-integration` exists | 8 |
 | 10 | ~~**§9.7: a deadline on the trial in flight in triald**~~ **done** — `NEVER_FINISHED = 11` | — |
 
