@@ -467,12 +467,30 @@ starts to earn itself**, and not before.
      **is** the observer pattern, at the layer that can afford it: a subscriber
      that dies costs nobody a record. Adding a "register a callback URL" list to
      either daemon would rebuild it, statefully, worse.
-   - *The one exception is triald itself*, and it is why the outcome is a
-     directed POST and not a broadcast: triald must **own** the record, so the
-     sender needs delivery to have failed loudly. `triald_client` raises rather
-     than swallowing, and the daemon writes a `sequence_gap` to its trace. A
-     broadcast has no such guarantee, and a hole in a session's record is not
-     something to discover at analysis time.
+   - *The one exception is triald itself*, and it is a directed POST because
+     triald is a **named participant with a job**, not an audience: it decides
+     acceptance and writes the record, and a trial whose outcome nobody
+     received is a trial that never finishes. A broadcast has no addressee to
+     hold responsible for that.
+
+     **But statemachined does not care whether the POST succeeded, and should
+     not.** It cannot know whether the delivery mattered: `triald_base_url` may
+     be stale config for a triald that was decommissioned, and the daemon has no
+     idea whether a session is running. So it retries nothing, buffers nothing,
+     blocks on nothing, and the trial is unaffected — it writes one
+     `sequence_gap` line to its own trace and carries on. That line survives on
+     a small claim, not a large one: it is a local diagnostic, and without it
+     "triald has 400 trials and this device ran 401" is unexplainable.
+     `triald_client` raising is a *library* declining to decide; the caller
+     decides, and the caller shrugs.
+
+     **Only the receiver can tell "not yet" from "never", which is a gap.**
+     `session.py` has no timeout on a trial in flight: it waits for an outcome
+     for ever, and a lost POST means a session that quietly stops. That is
+     triald's to fix and nobody else's — and the bound already exists on the
+     wire, since `cap_milliseconds` is what triald tells statemachined the trial
+     may take. When the outbound client lands (§10 item 5), the cap it sends is
+     exactly the deadline it should then arm. **New: §9.7.**
    - *Inside triald:* `report_outcome` already fans out to the counters, the
      recorder and the policy in a fixed order the accounting depends on. A
      registry there would let a third party reorder or break it. Add one when
@@ -500,6 +518,16 @@ starts to earn itself**, and not before.
    one.** The *value* is the contract; the name only has to match itself, and
    there is no compatibility to keep with VStim. All five copies now agree.
 6. **§3C shape 1 or 2** — does vstimd learn `trial_id`, or stay trial-blind?
+7. **A deadline on the trial in flight.** `Session.next_trial()` sets
+   `_current` and nothing ever expires it. On the simulated path the outcome is
+   synchronous so it cannot matter; on the rig path the outcome arrives over a
+   network from a daemon that may have crashed, and today a lost POST is a
+   session that stops with no error anywhere in triald. What should happen when
+   the deadline passes: `CANCELLED` (code 10, which exists and means "aborted"),
+   or `UNDETERMINED` (-1, which is the value a trial has *while* running and is
+   not declarable)? Neither is quite "the executor went silent". Decide the
+   outcome before writing the timer. Blocked on nothing; wants doing with §10
+   item 5, since that is when triald starts sending the cap it would wait on.
 
 ## 10. Order of work
 
