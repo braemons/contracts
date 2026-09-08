@@ -1,7 +1,21 @@
 """Bringing up a rig: a renderer, a state machine and the daemon that decides.
 
-Every fixture here resolves the same way, in the same order, and the order is
-the design:
+**Two rigs, one set of tests.** By default the daemons are brought up on this
+machine — the renderer headless, the state machine as firmware compiled for the
+host — and that is what CI runs. With `--hardware` the same fixtures resolve to a
+real rig instead: a vstimd already running on the stimulus display, a board on
+the end of a cable, and wires between them.
+
+The tests do not know which. That is the whole design of this file, and it is
+worth defending: an acceptance suite written separately from the CI suite is an
+acceptance suite that drifts, and the drift is invisible precisely because the
+two are never run together. Here, `make accept` runs every test CI runs, against
+silicon, and then the handful that only wiring can answer.
+
+## Resolving the daemons
+
+Every fixture resolves the same way, in the same order, and the order is the
+design:
 
 1. **The pinned release artifact**, from `rig_versions.toml`. What an operator
    installs, which is the only thing this repo is really asking about.
@@ -26,7 +40,80 @@ import tomllib
 import pytest
 
 #: The rig half of the contracts repo — `rig/`, not the repo root.
+#: The rig half of the contracts repo — `rig/`, not the repo root.
 REPO = pathlib.Path(__file__).resolve().parents[1]
+
+#: Where a rig's vstimd answers, when one is already running. On a rig box it is
+#: started by systemd and owns the stimulus display; nothing here starts or stops
+#: it, because a renderer that a test could restart is a renderer that a test can
+#: leave a monitor black.
+DEFAULT_DISPLAY = "tcp://localhost:5555"
+DEFAULT_EVENT_PORT = 5556
+
+#: Where the board is. Any pyserial URL, the same spelling statemachined's own
+#: hardware suite takes.
+DEFAULT_TARGET = "/dev/ttyACM0"
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--hardware",
+        action="store_true",
+        help="run against a real rig: a running vstimd on the stimulus display "
+        "and a board on --target. Without it, everything is brought up locally.",
+    )
+    parser.addoption(
+        "--display",
+        default=DEFAULT_DISPLAY,
+        help=f"ZMQ address of the rig's vstimd (default: {DEFAULT_DISPLAY}). --hardware only.",
+    )
+    parser.addoption(
+        "--event-port",
+        type=int,
+        default=DEFAULT_EVENT_PORT,
+        help=f"its event stream (default: {DEFAULT_EVENT_PORT}). --hardware only.",
+    )
+    parser.addoption(
+        "--target",
+        default=DEFAULT_TARGET,
+        help=f"device path, host:port, or any pyserial URL (default: "
+        f"{DEFAULT_TARGET}). --hardware only.",
+    )
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers",
+        "wiring: needs the rig physically wired — see WIRING.md. Skipped without "
+        "--hardware, because there is nothing to be wrong about on a machine with "
+        "no wires.",
+    )
+    config.addinivalue_line(
+        "markers",
+        "manual: a person has to look at the display and answer. Skipped without "
+        "--hardware. These are the ones no amount of CI replaces: whether the "
+        "stimulus was actually *visible* is not a thing any daemon can report.",
+    )
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list) -> None:
+    if config.getoption("--hardware"):
+        return
+    skip = pytest.mark.skip(reason="needs --hardware and a wired rig; see rig/WIRING.md")
+    for item in items:
+        if "wiring" in item.keywords or "manual" in item.keywords:
+            item.add_marker(skip)
+
+
+@pytest.fixture(scope="session")
+def on_hardware(request: pytest.FixtureRequest) -> bool:
+    """Whether this run is against a real rig.
+
+    A test should need this only to *report* differently, never to assert
+    differently. A test that asserts one thing locally and another on hardware
+    has stopped being one test.
+    """
+    return bool(request.config.getoption("--hardware"))
 
 
 @pytest.fixture(scope="session")
@@ -138,13 +225,45 @@ def statemachined_device(pins: dict) -> pathlib.Path:
 
 
 @pytest.fixture(scope="session")
-def display(vstimd_binary: pathlib.Path, tmp_path_factory) -> dict:
-    """A running vstimd in null mode: no display, a real frame clock.
+def display(request: pytest.FixtureRequest, tmp_path_factory) -> dict:
+    """A vstimd to command and listen to.
 
-    Null mode is not a lesser path. It runs the same per-frame drain as the
-    display backends, so the events it publishes are the events a rig publishes
-    — which is the whole reason this test can run without a monitor attached.
+    On a rig, one that is **already running** and owns the stimulus monitor:
+    started by systemd, on for alignment and luminance checks whether or not a
+    session exists. Nothing here starts or stops it. A test that could restart
+    the renderer is a test that can leave a monitor black in front of an animal,
+    and the acceptance run happens with the animal's rig, not a spare.
+
+    Locally, one of its own in null mode. Null is not a lesser path: it runs the
+    same per-frame drain as the display backends, so the events it publishes are
+    the events a rig publishes — which is what lets the same tests run in both
+    places.
     """
+    if request.config.getoption("--hardware"):
+        yield from _attached_display(
+            request.config.getoption("--display"),
+            request.config.getoption("--event-port"),
+        )
+    else:
+        yield from _headless_display(request.getfixturevalue("vstimd_binary"), tmp_path_factory)
+
+
+def _attached_display(address: str, event_port: int):
+    from vstimd import Connection
+
+    try:
+        with Connection(address, recv_timeout_s=2.0) as probe:
+            probe.system.wait_for_frames(0)
+    except Exception as error:
+        pytest.skip(
+            f"no vstimd answering at {address}: {error}. On a rig it is a service "
+            f"(`systemctl status vstimd`); point --display elsewhere if yours is "
+            f"not there."
+        )
+    yield {"address": address, "event_port": event_port, "log": None}
+
+
+def _headless_display(vstimd_binary: pathlib.Path, tmp_path_factory):
     from vstimd import Connection
 
     command_port, event_port = distinct_ports(2)
@@ -172,7 +291,7 @@ def display(vstimd_binary: pathlib.Path, tmp_path_factory) -> dict:
                 pytest.fail(f"vstimd exited at once:\n{log.read_text()}")
             try:
                 with Connection(address, recv_timeout_s=1.0) as probe:
-                    probe.system.query_server_info()
+                    probe.system.wait_for_frames(0)
                 return True
             except Exception:
                 return False
@@ -218,51 +337,25 @@ def statemachined_bench(statemachined_device: pathlib.Path):
     )
 
 
-@pytest.fixture
-def executor(statemachined_bench, statemachined_device: pathlib.Path, tmp_path):
-    """A statemachined daemon in front of a freshly booted device.
+def _daemon_configuration(device_target: str, tmp_path):
+    """One rig config, whatever is on the other end of `device_target`.
 
-    One device per test, so state cannot leak: a device remembers its wiring,
-    its graph set and whether it should be running trials on its own, and a
-    shared store would make one test's settings the next test's boot.
+    Shared between the two executor fixtures on purpose: a board and a
+    host-compiled device must be given *the same* daemon, or a difference in
+    behaviour between them is a difference between two configurations and proves
+    nothing about the hardware.
     """
     import json
 
-    from fastapi.testclient import TestClient
-    from statemachined.api.application import create_application
     from statemachined.rig_configuration import RigConfiguration
-
-    os.environ.setdefault("STATEMACHINED_NATIVE_DEVICE", str(statemachined_device))
-    device = statemachined_bench.NativeDeviceOnASocket(
-        store_path=str(tmp_path / "store.bin")
-    )
-    device.start()
 
     configs = tmp_path / "configs"
     configs.mkdir(parents=True, exist_ok=True)
     (configs / "bench.config.json").write_text(
-        json.dumps(
-            {
-                "name": "bench",
-                "line_map": {
-                    "input_lines": [
-                        {"name": "start_switch", "line_index": 0},
-                        {"name": "lever", "line_index": 4},
-                    ],
-                    "output_lines": [
-                        {"name": "ready_lamp", "line_index": 0},
-                        {"name": "reward_valve", "line_index": 3, "safe_level_is_high": True},
-                    ],
-                },
-                "graphs": [],
-            },
-            indent=2,
-        )
-        + "\n"
+        json.dumps({"name": "bench", "line_map": LINE_MAP, "graphs": []}, indent=2) + "\n"
     )
-
-    configuration = RigConfiguration(
-        device_target=device.target_url,
+    return RigConfiguration(
+        device_target=device_target,
         device_timeout_seconds=5.0,
         graph_store_directory=tmp_path / "graphs",
         state_machine_config_directory=configs,
@@ -271,6 +364,99 @@ def executor(statemachined_bench, statemachined_device: pathlib.Path, tmp_path):
         heartbeat_seconds=0.5,
         startup_state_machine_config="bench",
     )
+
+
+#: The rig these tests assume, as a state-machine config.
+#:
+#: **This is the wiring, written down.** `WIRING.md` says which physical pin each
+#: of these names is, and the acceptance tests are only meaningful if the two
+#: agree — a `lever` on line 4 here and a button soldered to line 5 there is a
+#: test that fails for a reason having nothing to do with any daemon.
+LINE_MAP = {
+    "input_lines": [
+        {"name": "start_switch", "line_index": 0},
+        {"name": "lever", "line_index": 4},
+    ],
+    "output_lines": [
+        {"name": "ready_lamp", "line_index": 0},
+        {"name": "reward_valve", "line_index": 3, "safe_level_is_high": True},
+        {"name": "stimulus_gate", "line_index": 1},
+    ],
+}
+
+
+@pytest.fixture
+def executor(request: pytest.FixtureRequest, tmp_path):
+    """A statemachined in front of a device.
+
+    On a rig, the board on `--target`. Locally, the same firmware compiled for
+    this host, on a socket. The daemon is identical either way — see
+    `_daemon_configuration` — so a test that passes locally and fails on the
+    bench has told you something about the device, which is the only reason to
+    own a bench.
+    """
+    from fastapi.testclient import TestClient
+    from statemachined.api.application import create_application
+
+    if request.config.getoption("--hardware"):
+        target = request.config.getoption("--target")
+        configuration = _daemon_configuration(target, tmp_path)
+        with TestClient(create_application(configuration)) as client:
+            if client.get("/api/device").json().get("state") in (None, "absent"):
+                pytest.skip(f"no board answering on {target}")
+            yield client
+            _leave_the_device_idle(client, target)
+        return
+
+    device = request.getfixturevalue("statemachined_bench").NativeDeviceOnASocket(
+        store_path=str(tmp_path / "store.bin")
+    )
+    device.start()
+    configuration = _daemon_configuration(device.target_url, tmp_path)
     with TestClient(create_application(configuration)) as client:
         yield client
     device.stop()
+
+
+def _leave_the_device_idle(client, target: str) -> None:
+    """A board is one object shared by every test, unlike a fresh native device.
+
+    It refuses a graph upload while a trial is running, so one test that walks
+    away mid-trial fails the next several with an error about something else
+    entirely. Local runs get a new device per test and need none of this.
+    """
+    try:
+        client.post("/api/trial/cancel", json={"reason": "test teardown"})
+    except Exception as error:  # the run must not end because teardown was untidy
+        print(f"\ncould not return {target} to idle: {error}")
+
+
+# ── The operator ──────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def confirm(request: pytest.FixtureRequest):
+    """Ask the person at the rig, and fail if the answer is no.
+
+    **The only assertion in this repository a machine cannot make.** Whether a
+    stimulus was *visible*, whether the valve audibly clicked, whether the lamp
+    lit — no daemon reports these, and a rig that reports a stimulus it did not
+    draw is exactly the failure an acceptance test exists to catch.
+
+    Capture is suspended around the prompt: pytest swallows stdout by default,
+    and an acceptance run that appeared to hang while silently waiting for an
+    answer would be worse than no prompt at all.
+    """
+    if not request.config.getoption("--hardware"):
+        pytest.skip("--hardware only: there is nobody to ask")
+
+    capture = request.config.pluginmanager.getplugin("capturemanager")
+
+    def ask(question: str) -> None:
+        with capture.global_and_fixture_disabled():
+            print(f"\n  {question}")
+            answer = input("  [y/N] ").strip().lower()
+        if answer not in ("y", "yes"):
+            pytest.fail(f"the operator said no: {question}")
+
+    return ask

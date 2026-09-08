@@ -1,4 +1,4 @@
-.PHONY: help test test-local lint clean
+.PHONY: help test test-local accept lint clean
 
 # Local checkouts, for `make test-local`. Override if yours live elsewhere.
 VSTIMD        ?= ../../vstimd
@@ -34,6 +34,13 @@ test-local: ## against local checkouts (see VSTIMD, STATEMACHINED, TRIALD)
 	STATEMACHINED_DEVICE=$(abspath $(STATEMACHINED))/build/statemachined_native_device \
 	STATEMACHINED_BENCH=$(abspath $(STATEMACHINED))/daemon/bench \
 	uv run --group dev --no-sync pytest -v $(ARGS)
+
+# The acceptance run: the same tests, on a real rig, plus the ones that need
+# wires and a person. `-s` is not needed — the manual prompts suspend pytest's
+# capture themselves — but the run is interactive, so it is not for CI.
+accept: ## the acceptance suite on a wired rig (see WIRING.md)
+	uv sync --quiet --group dev
+	uv run --group dev pytest -v --hardware $(ARGS)
 
 lint:
 	uv run --group dev ruff check .

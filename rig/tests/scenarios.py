@@ -1,0 +1,174 @@
+"""The trials themselves: graphs, and the loop that runs one.
+
+**This is the sharing.** The CI suite and the acceptance suite call the same
+functions here; what differs between them is only which fixtures brought the
+daemons up. An acceptance suite that reimplemented the loop would drift from the
+one CI runs, and the drift would be invisible exactly because the two are never
+run together.
+
+Nothing here is a fixture and nothing here knows what a board is. Every function
+takes the pieces it needs and returns what happened, which is also what makes
+them readable as a description of the rig's loop.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+from typing import Any
+
+
+def timed_graph(name: str, milliseconds: int = 60, outcome: str = "HIT") -> dict:
+    """A graph that waits, then declares `outcome`. Nothing to press.
+
+    The graph a rig can run with no subject and no wires: it reaches its outcome
+    on a timeout, which exercises the compiler, the framing, the device's scan
+    loop and the trace — everything above the trigger.
+    """
+    return {
+        "name": name,
+        "entry": "Wait",
+        "distributions": {"dwell": {"kind": "fixed", "duration_ms": milliseconds}},
+        "states": [
+            {
+                "name": "Wait",
+                "on_entry": [{"line": "ready_lamp", "kind": "high"}],
+                "timeout": {"after": "dwell", "goto": "End"},
+            },
+            {"name": "End", "outcome": outcome},
+        ],
+    }
+
+
+def graph_waiting_for_a_lever(name: str, timeout_ms: int = 3000) -> dict:
+    """HIT if the lever goes high in time, MISS if it never does.
+
+    **The graph that needs a wire**, and the one no local run can answer: the
+    device sends commands and never drives its own inputs, so off a bench this
+    always takes the MISS branch. With a lever — or a jumper — on the input, the
+    HIT branch is reached through the real trigger path, which is the thing the
+    whole hourglass rests on and which nothing else in the family tests.
+
+    It raises `stimulus_gate` on entry: that is the TTL a rig runs to vstimd's
+    virtual trigger line, so a stimulus can be armed by the state machine
+    without a host round trip.
+    """
+    return {
+        "name": name,
+        "entry": "Wait",
+        "distributions": {"limit": {"kind": "fixed", "duration_ms": timeout_ms}},
+        "states": [
+            {
+                "name": "Wait",
+                "on_entry": [
+                    {"line": "ready_lamp", "kind": "high"},
+                    {"line": "stimulus_gate", "kind": "high"},
+                ],
+                "on": [{"line": "lever", "edge": "rising", "goto": "Hit"}],
+                "timeout": {"after": "limit", "goto": "Missed"},
+            },
+            {
+                "name": "Hit",
+                "on_entry": [{"line": "reward_valve", "kind": "pulse", "duration_ms": 40}],
+                "outcome": "HIT",
+            },
+            {"name": "Missed", "outcome": "MISS"},
+        ],
+    }
+
+
+def upload(executor, graph: dict) -> None:
+    """Store a graph and send the set to the device.
+
+    Two steps, and they are different things: the store keeps it, the session
+    upload compiles the named set and puts it on the device. A trial can only
+    name a graph the device is holding.
+    """
+    stored = executor.put(f"/api/graphs/{graph['name']}", json=graph)
+    assert stored.status_code in (200, 201), stored.text
+    sent = executor.post("/api/session/graphs", json={"graph_names": [graph["name"]]})
+    assert sent.status_code == 200, sent.text
+
+
+@dataclasses.dataclass(frozen=True)
+class Ran:
+    """One trial, and the frames it occupied. What every scenario returns."""
+
+    trial_id: int
+    outcome: Any
+    window: Any
+    first_frame: int
+    last_frame: int
+
+    @property
+    def frames(self) -> int:
+        return self.last_frame - self.first_frame
+
+
+def run_one_trial(
+    *,
+    display_connection,
+    executor_client,
+    executor,
+    observer,
+    graph: str,
+    trial_id: int = 1,
+    cap_milliseconds: int = 10_000,
+    while_running=None,
+) -> Ran:
+    """The rig's loop, in the order a rig runs it.
+
+    triald opens a window on the renderer's clock, arms the executor for this
+    trial and no other, starts it, watches the executor's trace go by, pulls that
+    trial's events by id and turns them into an outcome — then closes the window.
+
+    `while_running` is called once the trial has started, for a test that has to
+    *do* something to it: press a lever, watch a display. It is the only place
+    the two suites diverge, and it diverges by adding, never by replacing.
+    """
+    from triald.executor import TrialConfiguration
+
+    first_frame = display_connection.system.wait_for_frames(0).frame_count
+    observer.open_window(first_frame=first_frame)
+
+    executor.configure(
+        TrialConfiguration(
+            trial_id=trial_id,
+            statemachine_graph=graph,
+            cap_milliseconds=cap_milliseconds,
+        )
+    )
+    executor.start(trial_id)
+
+    # Observed, not waited on: the executor published and moved on, and this side
+    # is the one holding a deadline. Subscribing is opening the stream; nothing
+    # on the far end is holding the trial for anybody.
+    with executor_client.websocket_connect("/api/trace/stream?observer=triald") as stream:
+        if while_running is not None:
+            while_running()
+        finished = next(executor.finished_trials(iter(lambda: stream.receive_text(), None)))
+    assert finished == trial_id
+
+    outcome = executor.outcome_of(trial_id=trial_id)
+    last_frame = display_connection.system.wait_for_frames(0).frame_count
+    window = observer.close_window(last_frame=last_frame)
+
+    return Ran(
+        trial_id=trial_id,
+        outcome=outcome,
+        window=window,
+        first_frame=first_frame,
+        last_frame=last_frame,
+    )
+
+
+def line_levels(executor_client) -> dict[str, bool]:
+    """Every named line and whether it is high now, as the device reports it.
+
+    `GET /api/device/lines` is the only read-back there is: nothing can sense a
+    pin directly, so this is the device's own `io` word resolved against the line
+    map. It is what lets a test check that a graph's line numbers reach the pins
+    somebody actually wired.
+    """
+    body = executor_client.get("/api/device/lines").json()
+    lines = body.get("lines", body if isinstance(body, list) else [])
+    return {line["name"]: bool(line.get("is_high_now")) for line in lines}

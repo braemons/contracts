@@ -146,9 +146,7 @@ def test_the_frame_a_command_lands_on_is_the_frame_the_event_reports(display):
 # ── A trial, joined to what the renderer saw ──────────────────────────────────
 
 
-def test_a_trial_runs_on_one_daemon_and_is_bounded_by_frames_from_another(
-    display, armed_executor
-):
+def test_a_trial_runs_on_one_daemon_and_is_bounded_by_frames_from_another(display, armed_executor):
     """The whole loop: triald opens a window on the renderer's clock, runs a
     trial on the state machine, and closes the window when the trial ends.
 
@@ -176,22 +174,14 @@ def test_a_trial_runs_on_one_daemon_and_is_bounded_by_frames_from_another(
             observer.open_window(first_frame=first_frame)
 
             executor.configure(
-                TrialConfiguration(
-                    trial_id=1, statemachine_graph="show", cap_milliseconds=5000
-                )
+                TrialConfiguration(trial_id=1, statemachine_graph="show", cap_milliseconds=5000)
             )
             executor.start(1)
 
             # Observed, not waited on: the executor published and moved on, and
             # this side is the one holding a deadline. Same shape as stage 2.
-            with armed_executor.websocket_connect(
-                "/api/trace/stream?observer=triald"
-            ) as stream:
-                finished = next(
-                    executor.finished_trials(
-                        iter(lambda: stream.receive_text(), None)
-                    )
-                )
+            with armed_executor.websocket_connect("/api/trace/stream?observer=triald") as stream:
+                finished = next(executor.finished_trials(iter(lambda: stream.receive_text(), None)))
             assert finished == 1
             outcome = executor.outcome_of(trial_id=1)
 
@@ -240,12 +230,8 @@ def test_the_observer_survives_a_trial_it_was_not_watching(display, armed_execut
             TrialConfiguration(trial_id=7, statemachine_graph="show", cap_milliseconds=5000)
         )
         executor.start(7)
-        with armed_executor.websocket_connect(
-            "/api/trace/stream?observer=triald"
-        ) as stream:
-            assert next(
-                executor.finished_trials(iter(lambda: stream.receive_text(), None))
-            ) == 7
+        with armed_executor.websocket_connect("/api/trace/stream?observer=triald") as stream:
+            assert next(executor.finished_trials(iter(lambda: stream.receive_text(), None))) == 7
         # No window was ever opened, and nothing anywhere minded.
         assert observer.close_window(last_frame=1) is None
     finally:
