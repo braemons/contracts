@@ -92,8 +92,10 @@ looks complete. `GET /api/trace/trial/{id}` recovers any trial exactly.
 rig, implementing it would mean blocking in a loop asking "is trial 7 done yet"
 for an event that was already published. See §9.1.
 
-**C is a broadcast, and follows B** — `braemons/vstimd#145`. It was designed as
-a pull: triald notes the frame counter at configure and asks for "drops since
+**C is a broadcast, and follows B** — built on vstimd's `0.2` branch,
+`braemons/vstimd#145`. `proto/vstimd/v1/events.proto` is the artefact to read;
+`--event-port` (5556) and `--no-events` are the switches. It was designed as a
+pull: triald notes the frame counter at configure and asks for "drops since
 frame N" at result. That would work. It has two costs a stream does not:
 
 - **frame loss becomes the only thing anybody can ever learn.** Every further
@@ -259,7 +261,8 @@ Not interactions in the sense above — no request, no reply, no schema to revie
 | statemachined lists who is watching | `GET /api/observers`, Observers panel | ✅ |
 | triald counts, accepts, records | `session.report_outcome()`, `recording.py` | ✅ |
 | triald configures vstimd | — | ❌ neither side |
-| vstimd broadcasts frame loss | — | ❌ `braemons/vstimd#145` |
+| vstimd broadcasts frame loss | `WS`-less: ZMQ PUB, `events.proto` | ✅ `0.2` |
+| triald subscribes to vstimd | — | ❌ the last gap |
 | readiness gate `configure→ready→start` | designed, `triald/dev/PLAN.md` | ❌ not built |
 
 ## 5. Three defects, all in interaction B
@@ -618,7 +621,7 @@ starts to earn itself**, and not before.
 | 5 | ~~Answer §9.2; a `graph` on the trial type; triald's outbound client~~ **done** | — |
 | 6 | ~~**Stage 2 e2e** — triald initiates~~ **done** (10 tests, `make test-e2e`) | — |
 | 7 | `mdns.md`; `rig=` in both daemons; vstimd's TXT records and web port | — |
-| 8 | §3C: vstimd's event stream — `braemons/vstimd#145` | — |
+| 8 | ~~§3C: vstimd's event stream~~ **done** on vstimd `0.2`; triald's subscriber remains | — |
 | 9 | **Stage 3 e2e**, and decide whether `rig-integration` exists | 8 |
 | 10 | ~~**§9.7: a deadline on the trial in flight in triald**~~ **done** — `NEVER_FINISHED = 11` | — |
 
