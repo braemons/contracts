@@ -25,6 +25,7 @@ import tomllib
 
 import pytest
 
+#: The rig half of the contracts repo — `rig/`, not the repo root.
 REPO = pathlib.Path(__file__).resolve().parents[1]
 
 

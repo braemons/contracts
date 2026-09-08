@@ -1,14 +1,17 @@
-# rig-integration
+# rig/ — the tests that belong to no daemon
 
-**The tests that belong to no daemon.**
+The dynamic half of this repository. `INTERACTIONS.md` writes down what the
+daemons promise each other and `check_outcomes.py` proves each repo's sources
+still say it; these tests run all three and watch them do it.
 
 vstimd renders. statemachined runs a trial's state machine. triald decides what a
 trial is and what its outcome was. Each has its own suite, and each of those
-suites is about that daemon. This repo holds the ones that are about *the three
-together* — and it exists because such a test has no honest home inside any of
-them.
+suites is about that daemon. This directory holds the ones that are about
+*the three together* — and they live here because such a test has no honest home
+inside any of them.
 
-It owns no source. That is the point.
+It owns no source. That is the point, and it is the same point the rest of the
+repository makes.
 
 ## Why not inside one of the daemons
 
@@ -29,10 +32,10 @@ code under test really is triald's. But triald's CI would then have to build a
 Rust binary *and* a firmware image, neither of which it needs for anything else,
 and the honest description of that repo would stop being "a trial daemon".
 
-So: a fourth repo, with the cost that comes with it — no source of its own, a CI
-to keep green, and version pins that go stale quietly. Those are real. They are
-smaller than putting two foreign builds into a daemon that should not know the
-other two exist.
+So: not in any of them — here, next to the contract they are testing against.
+The cost is real: pins that go stale quietly, and a CI job heavy enough to want
+its own path filter. It is smaller than putting two foreign builds into a daemon
+that should not know the other two exist.
 
 ## What it installs, and why that matters
 
@@ -75,6 +78,9 @@ Step 2 is scaffolding, not the design. What each repo owes, to close it:
 ## Running it
 
 ```bash
-make test         # the three-daemon tests
-make test-local   # the same, against local builds (see the env vars above)
+cd rig
+make test         # against pinned releases — what an operator installs
+make test-local   # against local checkouts (VSTIMD, STATEMACHINED, TRIALD)
 ```
+
+From the repository root, `make rig` does the same.

@@ -1,9 +1,9 @@
 .PHONY: help test test-local lint clean
 
 # Local checkouts, for `make test-local`. Override if yours live elsewhere.
-VSTIMD        ?= ../vstimd
-STATEMACHINED ?= ../statemachined
-TRIALD        ?= ../triald
+VSTIMD        ?= ../../vstimd
+STATEMACHINED ?= ../../statemachined
+TRIALD        ?= ../../triald
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -24,6 +24,7 @@ test: ## against the pinned releases — what an operator installs
 # from-source path that is broken, which is one more reason the design installs
 # releases.
 test-local: ## against local checkouts (see VSTIMD, STATEMACHINED, TRIALD)
+	uv sync --quiet --group dev
 	uv pip install --quiet \
 		-e $(TRIALD) \
 		-e $(STATEMACHINED)/daemon \

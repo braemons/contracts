@@ -630,15 +630,39 @@ starts to earn itself**, and not before.
 | 5 | ~~Answer §9.2; a `graph` on the trial type; triald's outbound client~~ **done** | — |
 | 6 | ~~**Stage 2 e2e** — triald initiates~~ **done** (10 tests, `make test-e2e`) | — |
 | 7 | `mdns.md`; `rig=` in both daemons; vstimd's TXT records and web port | — |
-| 8 | ~~§3C: vstimd's event stream; the client subscriber; triald's join~~ **done**; wiring them in triald remains | — |
-| 9 | **Stage 3 e2e**, and decide whether `rig-integration` exists | 8 |
+| 8 | ~~§3C: vstimd's event stream; the client subscriber; triald's join~~ **done** — `triald.api.stimulus_subscriber` closes it | — |
+| 9 | ~~**Stage 3 e2e**, and decide whether `rig-integration` exists~~ **done** — it does not: it is [`rig/`](rig/README.md), here | — |
 | 10 | ~~**§9.7: a deadline on the trial in flight in triald**~~ **done** — `NEVER_FINISHED = 11` | — |
 
-**Interactions A and B are done, and the model closes.** triald commands its
+**Interactions A, B and C are done, and the model closes.** triald commands its
 executor, subscribes to what it publishes, and now notices for itself when
-nothing arrives (§9.7). Nothing in the loop waits on a promise nobody could
-keep.
+nothing arrives (§9.7); it subscribes to the display the same way and owns the
+join to a trial, because it is the only side that knows what a trial is. Nothing
+in the loop waits on a promise nobody could keep.
 
-**Item 7 (mDNS) is next and is independent and small** — and vstimd's event
-stream needs a port advertised anyway, so a console can find it without being
-told.
+**Item 7 (mDNS) is what is left, and it is independent and small** — and
+vstimd's event stream needs a port advertised anyway, so a console can find it
+without being told.
+
+### Where the stage-3 tests live, and why not a fourth repo
+
+They are in [`rig/`](rig/README.md), in this repository, and that is a change of
+plan worth writing down rather than quietly doing.
+
+The plan asked whether a `rig-integration` repo should exist. It should not,
+because it would be *this* repo with a different name. The two things do the same
+job at different distances: `INTERACTIONS.md` says what the daemons promise each
+other and `check_outcomes.py` proves each repo's sources still say it, statically
+and offline; `rig/` starts all three and watches them keep the promise. A
+contract nobody checks is a wish; a suite of assertions with no written contract
+is something nobody can argue with.
+
+They also fail differently, which is the practical reason to keep both. A renamed
+outcome breaks the checker in every repo in seconds, with no daemon running. A
+frame counter that quietly drifted from another frame counter passes every static
+check anybody could write, and only three real processes on one machine will say
+so — which is exactly what `rig/` caught first (§3C).
+
+The rule in the README still holds: nothing installs this repository. `rig/`
+installs all three daemons and can only do that because nothing installs `rig/`.
+It is downstream of everything and upstream of nothing.

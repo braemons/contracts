@@ -81,11 +81,30 @@ rule is that it has none.
 answer different questions.** console is how a rig looks on one screen; contracts
 is what the daemons say to each other on the wire.
 
+## Two halves: what is promised, and whether it is kept
+
+A contract nobody checks is a wish, and a pile of assertions with no written
+contract is a test suite nobody can argue with. So both live here:
+
+| | |
+|---|---|
+| **static** | `INTERACTIONS.md` says what the daemons promise each other. `check_outcomes.py` reads each repo's own sources — Python enums, a C++ header, a JavaScript table — and holds them to `outcomes.json`. It runs offline, inside each repo's CI, against a vendored copy. |
+| **dynamic** | [`rig/`](rig/README.md) installs all three daemons and runs a trial across them. It checks the things no static reader can: that the frame axis vstimd publishes is the axis triald bounds a trial with, that a trial run on one daemon can be joined to what another saw while it ran. |
+
+They fail differently, which is why both are worth having. A renamed outcome
+breaks the checker in every repo within seconds and needs no daemon running. A
+frame counter that quietly drifted from another frame counter passes every static
+check ever written, and only three real processes on one machine will say so.
+
 ## What this repo is not
 
 **Not a place to put shared code.** No client library, no generated stubs, no
 package any daemon imports at build time. A daemon that cannot build without
 this repo is not optional any more.
+
+That rule binds the static half. `rig/` is the exception that proves it: it
+installs all three daemons, and it can, because **nothing installs `rig/`**. It
+is downstream of everything and upstream of nothing.
 
 The files here are **vendored, not depended on**: each repo holds a
 byte-identical copy and checks its own sources against it, offline, in its own
@@ -102,6 +121,7 @@ long form, including why it is a data file and not a `.proto`.
 | `outcomes.json` | the `.tdr` outcome codes — the source of truth for five copies that had already drifted |
 | `check_outcomes.py` | vendored into each repo; reads that repo's own sources and holds them to the table |
 | `check_vendored_copies.py` | are the copies still this one? `--fix` syncs them. Run here, by whoever changes the taxonomy |
+| [`rig/`](rig/README.md) | the three-daemon end-to-end tests, and the pinned releases they run against |
 
 ## What lands here next
 

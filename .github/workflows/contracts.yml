@@ -1,0 +1,43 @@
+name: contracts
+
+# The static half. A few regexes over some source files: it must stay fast
+# enough that nobody thinks twice about it, so it is filtered to the files it
+# actually reads and never waits on the rig job.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "outcomes.json"
+      - "check_outcomes.py"
+      - "check_vendored_copies.py"
+      - ".github/workflows/contracts.yml"
+  pull_request:
+    paths:
+      - "outcomes.json"
+      - "check_outcomes.py"
+      - "check_vendored_copies.py"
+      - ".github/workflows/contracts.yml"
+  workflow_dispatch:
+
+jobs:
+  taxonomy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The daemons, only so their sources can be read. Nothing is installed and
+      # nothing is built: the checker is regexes over files on disk, which is
+      # what lets each repo run its own copy of it offline.
+      # `check_vendored_copies.py` looks for them beside this checkout, which is
+      # the same place they sit on a developer's machine.
+      - uses: actions/checkout@v4
+        with: { repository: braemons/triald, path: ../triald }
+      - uses: actions/checkout@v4
+        with: { repository: braemons/statemachined, path: ../statemachined }
+
+      - name: The vendored copies are still this one
+        run: make vendored

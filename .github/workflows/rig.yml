@@ -1,4 +1,4 @@
-name: CI
+name: rig
 
 # The three-daemon tests. Nothing here builds a daemon from source *by design* —
 # the question this repo asks is whether the three released artifacts work
@@ -12,7 +12,9 @@ name: CI
 on:
   push:
     branches: [main]
+    paths: ["rig/**", ".github/workflows/rig.yml"]
   pull_request:
+    paths: ["rig/**", ".github/workflows/rig.yml"]
   # Weekly, because this suite can go red without anyone touching this repo:
   # its whole subject is three things that move independently.
   schedule:
@@ -71,11 +73,12 @@ jobs:
         run: make native-device || make build
 
       - name: Run the three-daemon tests
-        run: make test-local
+        run: make rig-local
         env:
           VSTIMD: ${{ github.workspace }}/vstimd
           STATEMACHINED: ${{ github.workspace }}/statemachined
           TRIALD: ${{ github.workspace }}/triald
 
       - name: Lint
+        working-directory: rig
         run: make lint
