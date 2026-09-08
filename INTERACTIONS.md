@@ -545,7 +545,35 @@ starts to earn itself**, and not before.
    broadcast is what makes that work. It publishes frame-numbered facts and
    never learns what a trial is; the consumer owns the join, because the
    consumer is the only one that knows. `braemons/vstimd#145`.
-7. **A deadline on the trial in flight — the one thing the broadcast model
+7. ~~**A deadline on the trial in flight**~~ **Settled and built:
+   `NEVER_FINISHED = 11`.**
+
+   `SessionConfig.trial_cap_ms` is latched onto the spec at selection and
+   published, so the record says what the trial was allowed to take.
+   `Session.expire_overdue_trial()` is a no-op unless something is overdue, so
+   it is safe on a timer; triald's API runs it for the app's whole life and
+   swallows its own failures, because a watchdog that can kill the session it
+   guards is worse than none. The trial is recorded rather than dropped, never
+   accepted, and the session carries on — a dead executor costs one trial.
+
+   **The new code is the first that is not VStim's, and the only one triald
+   assigns to itself.** Nothing sends it. Named for what is *known* rather than
+   for the timer that noticed: every existing code would have guessed.
+   `CANCELLED` claims the experimenter stopped it, `NOT_STARTED` claims the
+   subject did nothing, and `UNDETERMINED` is the value a trial holds *while*
+   it runs — a record full of those could not be told from a session still in
+   flight.
+
+   statemachined carries the code too but may not declare it, alongside
+   `UNDETERMINED`: the `.tdr` code space is one space, so leaving it out would
+   mean the next outcome added there picks 11 for something else — and a
+   terminal state declaring "nobody heard from me" is a contradiction.
+
+   **The rule this leaves:** extending the taxonomy is fine; renumbering never
+   is; and a new name must land in all five copies at once, because outcomes
+   cross the wire *by name*.
+
+   *(The original text, for the reasoning:)* **the one thing the broadcast model
    needs that is not built.** `Session.next_trial()` sets `_current` and nothing
    ever expires it. On the simulated path the outcome is synchronous so it
    cannot matter; on a rig it arrives from a subscription to a daemon that may
@@ -573,22 +601,22 @@ starts to earn itself**, and not before.
 | 7 | `mdns.md`; `rig=` in both daemons; vstimd's TXT records and web port | — |
 | 8 | §3C: vstimd's event stream — `braemons/vstimd#145` | — |
 | 9 | **Stage 3 e2e**, and decide whether `rig-integration` exists | 8 |
-| 10 | **§9.7: a deadline on the trial in flight in triald** — the one thing the broadcast model needs that is not built | — |
+| 10 | ~~**§9.7: a deadline on the trial in flight in triald**~~ **done** — `NEVER_FINISHED = 11` | — |
 
-**Next is item 10, and it is the load-bearing one.** Under the broadcast model
-nobody is responsible for delivering an outcome to triald, which is correct —
-and it means triald must notice for itself when one does not arrive. Today
-`Session.next_trial()` sets `_current` and nothing ever expires it, so a
-subscriber that dies is a session that quietly stops with no error anywhere. The
-bound already exists on the wire: `cap_milliseconds` is what triald tells the
-executor a trial may take. What is undecided is the *outcome* an expired trial
-gets — see §9.7.
+**Interactions A and B are done, and the model closes.** triald commands its
+executor, subscribes to what it publishes, and now notices for itself when
+nothing arrives (§9.7). Nothing in the loop waits on a promise nobody could
+keep.
+
+**Next is item 1's remainder — `outcomes.json` and `generate.py` — and it is
+now the most valuable thing left.** The taxonomy is spelled identically in all
+five copies, and *nothing holds it there*: the conformance test went away with
+the transcription it was checking, and §9.7 just added a twelfth code by hand to
+every one of them. Outcomes cross the wire by name, so the next drift is a 422
+and a graph nobody can compile — the same pair of symptoms as §5.2.
 
 Item 7 (mDNS) is independent and small, and vstimd's event stream needs a port
-advertised anyway. Item 1's remainder — `outcomes.json` and `generate.py` — is
-the one that stops a class of bug rather than a bug: the taxonomy is spelled the
-same in all five copies now, but nothing holds it there since the conformance
-test went away with the transcription it was checking.
+advertised anyway. Item 8 is `braemons/vstimd#145`.
 
 Item 7 is independent and small. Item 1's remainder — `outcomes.json` and
 `generate.py` — is the one that stops a class of bug rather than a bug; the
