@@ -36,7 +36,6 @@ test-local: ## against local checkouts (VSTIMD, STATEMACHINED, TRIALD)
 		fastapi uvicorn pydantic httpx
 	VSTIMD_BINARY=$(abspath $(VSTIMD))/target/release/vstimd \
 	STATEMACHINED_DEVICE=$(abspath $(STATEMACHINED))/build/statemachined_native_device \
-	STATEMACHINED_BENCH=$(abspath $(STATEMACHINED))/daemon/bench \
 	uv run --group dev --no-sync pytest -v $(ARGS)
 
 # ── What an acceptance run does ───────────────────────────────────────────────

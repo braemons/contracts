@@ -20,7 +20,11 @@ log() { printf '\n=== %s ===\n' "$1"; }
 # expects, and its postinstall says so.
 
 log "configuring /etc/braemons"
-: "${STATEMACHINED_DEVICE_TARGET:?set STATEMACHINED_DEVICE_TARGET (e.g. socket://127.0.0.1:5300)}"
+# The device the daemon talks to. Defaults to the one the package itself ships:
+# `statemachined device` puts the firmware compiled for this host on a port, so
+# a container -- like a rig box on the day it arrives -- has something real to
+# point at without a board. Override it to reach a board on a cable.
+STATEMACHINED_DEVICE_TARGET="${STATEMACHINED_DEVICE_TARGET:-socket://127.0.0.1:5300}"
 
 python3 - "$STATEMACHINED_DEVICE_TARGET" <<'PY'
 import pathlib, sys
@@ -61,6 +65,19 @@ JSON
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 
+log "starting the device"
+# Only when nothing else was named: an operator pointing this at a real board
+# does not also want a simulated one answering on 5300.
+DEVICE_PID=
+if [ "$STATEMACHINED_DEVICE_TARGET" = "socket://127.0.0.1:5300" ]; then
+  /opt/braemons/statemachined/bin/statemachined device --port 5300 \
+    >/var/log/statemachined-device.log 2>&1 &
+  DEVICE_PID=$!
+  echo "the firmware, compiled for this host, on $STATEMACHINED_DEVICE_TARGET"
+else
+  echo "using $STATEMACHINED_DEVICE_TARGET; not starting a device"
+fi
+
 log "starting vstimd"
 # --null: there is no display in a container. The frame loop is the same one the
 # display backends run, which is what makes the event stream here the event
@@ -75,7 +92,7 @@ log "starting statemachined"
 STATEMACHINED_PID=$!
 
 cleanup() {
-  kill "$VSTIMD_PID" "$STATEMACHINED_PID" 2>/dev/null || true
+  kill $VSTIMD_PID $STATEMACHINED_PID $DEVICE_PID 2>/dev/null || true
   wait 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -92,7 +109,8 @@ except Exception:
 done
 
 log "the daemons, as installed"
-dpkg-query -W -f='${Package} ${Version}\n' braemons-vstimd statemachined 2>/dev/null || true
+dpkg-query -W -f='${Package} ${Version}\n' \
+  braemons-vstimd braemons-statemachined braemons-triald statemachined 2>/dev/null || true
 /opt/rig-tests/bin/pip list 2>/dev/null | grep -iE "vstimd|triald" || true
 
 log "tests"

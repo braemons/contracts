@@ -51,32 +51,39 @@ claim this repo makes.
 
 ### The bootstrap gap, honestly
 
-**None of the three currently ships what that needs.** As of now:
+**Two of the three now ship what that needs; none of it is released yet.** As of
+now:
 
 | | released? | what is missing |
 |---|---|---|
-| vstimd | v0.1.0 | 0.2 is unreleased, and 0.1 has no event stream at all |
-| statemachined | v0.1.0-alpha1 tag | no published artifact; and the host-native device is a test fixture, not a release asset |
-| triald | — | no release workflow |
+| vstimd | v0.1.0 | 0.2 is tagged-but-unpushed, and 0.1 has no event stream at all |
+| statemachined | v0.1.0-alpha1 | the released `.deb` predates the shipped device; the code has it |
+| triald | — | packaging exists and is unreleased: no tag has been cut |
 
 So every fixture here resolves in three steps, in order:
 
 1. **The pinned release artifact** — the intended path, and the only one that
    tests what an operator installs.
-2. **An environment variable naming a local build** — `VSTIMD_BINARY`,
-   `STATEMACHINED_DEVICE`. For developing against an unreleased change, and for
-   getting this repo working at all today.
+2. **An installed daemon, or an environment variable naming a local build** —
+   `VSTIMD_BINARY`, `STATEMACHINED_SRC`. For developing against an unreleased
+   change, and for getting this repo working at all today.
 3. **Skip, naming exactly what was missing.** Never a silent pass.
 
 Step 2 is scaffolding, not the design. What each repo owes, to close it:
 
-* **vstimd** — release 0.2; the pipeline already publishes binaries.
-* **statemachined** — publish the native device (`firmware/native/`) as a release
-  asset. It already ships `.deb`, `.rpm` and the board firmware; the host-built
-  device is the one piece its own tests need that nobody outside the repo can
-  get. (Its bench bridge may already be in the package — check before assuming.)
-* **triald** — a release workflow. It has none, and it is the only one of the
-  three with no release path at all.
+* **vstimd** — release 0.2. The pipeline already publishes binaries; the tags are
+  prepared. This is the only one of the three where the *code* is not yet enough.
+* **statemachined** — ✅ **done, unreleased.** The package now carries the
+  firmware compiled for the host at
+  `/opt/braemons/statemachined/libexec/statemachined-device`, and
+  `statemachined device` puts it on a port. So an installed daemon has a device,
+  and the socket bridge is `statemachined.device.native_device_on_a_socket` —
+  an ordinary import rather than a path into somebody's checkout. Needs a tag.
+* **triald** — ✅ **done, unreleased.** `nfpm` config, packaging Makefile, pinned
+  builder image and `release.yml`, publishing `.deb`, `.rpm` **and a wheel**. The
+  wheel is the one that matters here: these tests import triald rather than
+  running it, and until it existed the only way to have it was a git URL. Needs
+  a tag.
 
 ### Nothing here imports a daemon
 

@@ -273,10 +273,35 @@ def _attached_display(address: str, event_port: int):
 
 
 def _headless_display(vstimd_binary: pathlib.Path, tmp_path_factory):
+    """A vstimd of this test run's own, touching nothing that outlives it.
+
+    Two things here are isolation rather than configuration, and both are the
+    difference between a suite you can run on your own workstation and one you
+    cannot.
+
+    **The storage directory.** Without `--storage-dir`, vstimd resolves
+    `/var/lib/braemons/vstimd`, then `~/.local/braemons/vstimd` -- so a test
+    server seeds demo scene-configs into the real one, writes a `_last_session`
+    slot over whatever was there, and a developer's saved work is quietly a test
+    run's leftovers. A temporary directory per session ends that.
+
+    **The shared-memory name.** The virtual trigger lines live at a POSIX shm
+    segment whose default name is the fixed `/vstimd_vtl`, so two vstimd
+    processes on one host share it -- a test run and a rig, or two test runs at
+    once, writing each other's trigger lines. It is a rig-config setting, so a
+    per-run name is a two-line file rather than a change to vstimd.
+    """
     from vstimd import Connection
 
     command_port, event_port = distinct_ports(2)
-    log = tmp_path_factory.mktemp("vstimd") / "vstimd.log"
+    scratch = tmp_path_factory.mktemp("vstimd")
+    log = scratch / "vstimd.log"
+    storage = scratch / "storage"
+    storage.mkdir()
+
+    # Unique per process, and short: Linux caps a POSIX shm name at NAME_MAX.
+    rig_config = scratch / "rig-config.toml"
+    rig_config.write_text(f'[vtl]\nshm_name = "/vstimd_test_{os.getpid()}"\n')
 
     with log.open("w") as sink:
         proc = subprocess.Popen(
@@ -288,6 +313,10 @@ def _headless_display(vstimd_binary: pathlib.Path, tmp_path_factory):
                 "--event-port",
                 str(event_port),
                 "--no-web",
+                "--storage-dir",
+                str(storage),
+                "--rig-config",
+                str(rig_config),
             ],
             stdout=sink,
             stderr=subprocess.STDOUT,
@@ -321,28 +350,40 @@ def statemachined_bench(statemachined_device: pathlib.Path):
 
     **Imported, never reimplemented.** statemachined's conftest says why: "two
     bridges that drift are two different devices". So this reaches for that one
-    rather than writing a second, which means the bridge has to be findable —
-    today by `STATEMACHINED_BENCH`, and properly by statemachined shipping
-    `bench/` in its distribution, which it should: the bridge is already
-    described there as "how anybody runs this daemon with no board on the desk",
-    which is a runtime concern, not a test one.
+    rather than writing a second.
+
+    It used to have to reach into a checkout by path, because the bridge lived
+    in `daemon/bench/` and was not in any distribution -- the bootstrap gap the
+    README described. statemachined ships it now, as
+    `statemachined.device.native_device_on_a_socket`, so the first thing tried
+    is an ordinary import: an installed daemon has it, and so does anything with
+    the wheel. The path fallbacks stay for a checkout that is not installed.
     """
     import sys
 
-    bench = os.environ.get("STATEMACHINED_BENCH")
-    candidates = [pathlib.Path(bench)] if bench else []
+    try:
+        from statemachined.device import native_device_on_a_socket
+
+        return native_device_on_a_socket
+    except ImportError:
+        pass
+
+    # A checkout, not installed. STATEMACHINED_SRC first because somebody who
+    # said where it is has already answered the question.
+    source = os.environ.get("STATEMACHINED_SRC")
+    candidates = [pathlib.Path(source) / "daemon" / "src"] if source else []
     # Next to the device binary is where a release asset would unpack it.
-    candidates.append(statemachined_device.parent / "bench")
+    candidates.append(statemachined_device.parent / "src")
     for directory in candidates:
-        if (directory / "native_device_on_a_socket.py").exists():
+        if (directory / "statemachined" / "device" / "native_device_on_a_socket.py").exists():
             sys.path.insert(0, str(directory))
-            import native_device_on_a_socket
+            from statemachined.device import native_device_on_a_socket
 
             return native_device_on_a_socket
     pytest.skip(
-        "statemachined's bench bridge was not found: set STATEMACHINED_BENCH to "
-        "the statemachined repo's daemon/bench directory. It is not packaged "
-        "yet — see README.md, 'The bootstrap gap'"
+        "statemachined's socket bridge was not found. Install the daemon "
+        "(`apt install braemons-statemachined`, or pip-install its wheel), or "
+        "set STATEMACHINED_SRC to a checkout"
     )
 
 
