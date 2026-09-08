@@ -1,0 +1,81 @@
+name: CI
+
+# The three-daemon tests. Nothing here builds a daemon from source *by design* —
+# the question this repo asks is whether the three released artifacts work
+# together, and a job that built them from HEAD would be asking a different
+# question that each daemon's own CI already answers.
+#
+# Until the artifacts exist (see README.md, "The bootstrap gap") this job runs
+# the local path, and says so in its name so nobody mistakes it for the real
+# one.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Weekly, because this suite can go red without anyone touching this repo:
+  # its whole subject is three things that move independently.
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  three-daemons-from-source:
+    name: three daemons (from source — see README, bootstrap gap)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: braemons/vstimd
+          ref: "0.2"
+          path: vstimd
+
+      - uses: actions/checkout@v4
+        with:
+          repository: braemons/statemachined
+          ref: main
+          path: statemachined
+
+      - uses: actions/checkout@v4
+        with:
+          repository: braemons/triald
+          ref: main
+          path: triald
+
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache the Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: vstimd
+
+      - name: Build the renderer
+        working-directory: vstimd
+        run: cargo build --release
+
+      # The generated protobuf stubs are gitignored, so a checkout of the client
+      # is not an installable package until this runs. The published wheel has
+      # them; a source install does not, which is one more reason this repo is
+      # meant to install releases.
+      - name: Generate the client's protobuf stubs
+        working-directory: vstimd/client/python
+        run: make proto
+
+      - name: Build the native device
+        working-directory: statemachined
+        run: make native-device || make build
+
+      - name: Run the three-daemon tests
+        run: make test-local
+        env:
+          VSTIMD: ${{ github.workspace }}/vstimd
+          STATEMACHINED: ${{ github.workspace }}/statemachined
+          TRIALD: ${{ github.workspace }}/triald
+
+      - name: Lint
+        run: make lint
