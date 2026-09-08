@@ -351,7 +351,7 @@ message**, which is the whole reason §7 says no to a proto repo.
 
 | Fact | Today |
 |---|---|
-| the eleven `.tdr` outcome codes | five copies, drifted (§5.2) |
+| the `.tdr` outcome codes | ✅ five copies, held to `outcomes.json` by a vendored checker |
 | rig identity — a `rig=` TXT record salted `braemons:` | designed in `console/docs/PLAN.md` §4, built nowhere |
 | mDNS TXT keys — `id` `version` `api` `elements` `device` `port` | statemachined publishes all six; vstimd publishes `id` only, pointing at the ZMQ port |
 | VTL bit and line semantics | already a proper in-repo contract in `vstimd/vtl/` — leave it there |
@@ -359,17 +359,36 @@ message**, which is the whole reason §7 says no to a proto repo.
 The first three become files here:
 
 ```
-conventions/
-├── INTERACTIONS.md     this document
-├── outcomes.json       the eleven (name, value) pairs — the source of truth
-├── mdns.md             the TXT keys, and the rig= salt
-└── generate.py         optional: outcomes.json → C++ header, Python enum, JS array
+contracts/
+├── INTERACTIONS.md            this document
+├── outcomes.json              ✅ the (name, value) pairs — the source of truth
+├── check_outcomes.py          ✅ vendored into each repo; reads its sources
+├── check_vendored_copies.py   ✅ are the copies still this one? --fix syncs them
+└── mdns.md                    the TXT keys, and the rig= salt
 ```
 
-**Each repo vendors the file and tests its own copy against it.** There is
-already precedent for exactly this in the tree:
-`statemachined/daemon/tests/unit/wire_vectors.json` is vendored golden data
+**A checker, not a generator — the plan said `generate.py` and that was
+wrong.** These tables are four fifths prose, and the prose is the part with
+value: *why* code 8 is spelled correctly, why two codes may not be declared, who
+may assign `NEVER_FINISHED`. Generating them deletes exactly that, or forces it
+into a JSON field nobody reads in context. So the copies stay hand-written where
+a person will read them, and `check_outcomes.py` makes them one table. It also
+means no build step, no generated files and no "do not edit" headers — a
+strictly smaller thing than what §6 originally proposed.
+
+**Each repo vendors both files and tests its own copies against them**, offline,
+in its own CI: `triald/tests/contracts/` and
+`statemachined/daemon/tests/contracts/`. There is already precedent in the tree
+— `statemachined/daemon/tests/unit/wire_vectors.json` is vendored golden data
 doing the same job.
+
+**Nothing checks a repo's copy against this one automatically, on purpose.** A
+repo reaching for the canonical file would be a build dependency wearing a
+disguise: it would need the network and would fail on a day this repository was
+unreachable for reasons having nothing to do with that repo.
+`check_vendored_copies.py` is run *here*, by the person changing the taxonomy,
+who is standing here anyway. `--fix` copies them over; then each repo's own
+tests say whether its sources have caught up.
 
 **Vendoring, not a package dependency.** A daemon that cannot build without
 this repo is not optional any more, and every daemon being independently
@@ -381,7 +400,7 @@ of the five copies. The RA4M1 has 32 KB of SRAM with ~11 KB unclaimed, and
 `PROTOCOL.md` §6 deliberately puts *no names* on that wire — states, lines and
 distributions are integer indices — to avoid spending it. It will never link
 protobuf. A `.proto` file would therefore exclude the copy that is hardest to
-fix; `generate.py` emitting an `enum class` covers it.
+fix; `check_outcomes.py` reads the `enum class` directly and covers it.
 
 For the `rig=` record, note that `console/docs/PLAN.md` §4 already reaches the
 same conclusion by a different route — its preferred fix is *"a few lines in
@@ -592,7 +611,7 @@ starts to earn itself**, and not before.
 
 | | | Blocked on |
 |---|---|---|
-| 1 | ~~settle §9.5~~ **done** (`UNEXPECTED_`); `outcomes.json` + `generate.py` still worth doing for the other three copies | — |
+| 1 | ~~settle §9.5; `outcomes.json`~~ **done** — a *checker*, not a generator (§6) | — |
 | 2 | ~~`trial_id` on triald's `OutcomeReport`~~ **done** | — |
 | 3 | ~~The OpenAPI conformance test in statemachined (§7)~~ **done** | — |
 | 4 | ~~**Stage 1 e2e**~~ **done** | — |
@@ -608,15 +627,9 @@ executor, subscribes to what it publishes, and now notices for itself when
 nothing arrives (§9.7). Nothing in the loop waits on a promise nobody could
 keep.
 
-**Next is item 1's remainder — `outcomes.json` and `generate.py` — and it is
-now the most valuable thing left.** The taxonomy is spelled identically in all
-five copies, and *nothing holds it there*: the conformance test went away with
-the transcription it was checking, and §9.7 just added a twelfth code by hand to
-every one of them. Outcomes cross the wire by name, so the next drift is a 422
-and a graph nobody can compile — the same pair of symptoms as §5.2.
-
-Item 7 (mDNS) is independent and small, and vstimd's event stream needs a port
-advertised anyway. Item 8 is `braemons/vstimd#145`.
+**Item 7 (mDNS) is next and is independent and small** — and vstimd's event
+stream needs a port advertised anyway, so it pairs with item 8
+(`braemons/vstimd#145`), which is the last of the three interactions.
 
 Item 7 is independent and small. Item 1's remainder — `outcomes.json` and
 `generate.py` — is the one that stops a class of bug rather than a bug; the
