@@ -1,8 +1,15 @@
 name: contracts
 
-# The static half. A few regexes over some source files: it must stay fast
-# enough that nobody thinks twice about it, so it is filtered to the files it
-# actually reads and never waits on the rig job.
+# The static half. A few regexes over some files on disk: it must stay fast
+# enough that nobody thinks twice about it, so it never waits on the rig job.
+#
+# **Two triggers, and the schedule is not belt-and-braces.** A push here catches
+# a taxonomy change that was not propagated. It cannot catch the other
+# direction: a daemon editing its own vendored copy. That repo's CI compares its
+# sources against its copy, so if both moved together it is green there, and
+# nothing in this repo was touched to trigger this. The weekly run is the only
+# thing that looks at all three at once, and drift is exactly the failure that
+# stays invisible until something else breaks strangely.
 
 on:
   push:
@@ -11,33 +18,44 @@ on:
       - "outcomes.json"
       - "check_outcomes.py"
       - "check_vendored_copies.py"
+      - "Makefile"
       - ".github/workflows/contracts.yml"
   pull_request:
     paths:
       - "outcomes.json"
       - "check_outcomes.py"
       - "check_vendored_copies.py"
+      - "Makefile"
       - ".github/workflows/contracts.yml"
+  schedule:
+    - cron: "0 5 * * 1"
   workflow_dispatch:
 
 jobs:
   taxonomy:
     runs-on: ubuntu-latest
     steps:
+      # This repo goes in a subdirectory, not at the workspace root, so the
+      # daemons can sit beside it — `actions/checkout` refuses any path outside
+      # the workspace, and `check_vendored_copies.py` looks for siblings,
+      # because that is where they are on a developer's machine.
       - uses: actions/checkout@v4
+        with: { path: contracts }
+
+      # Their default branches: this asks "do the copies match *now*", which is
+      # the only useful form of the question. A pinned ref would answer it about
+      # a past that nobody is working on.
+      - uses: actions/checkout@v4
+        with: { repository: braemons/triald, path: triald }
+      - uses: actions/checkout@v4
+        with: { repository: braemons/statemachined, path: statemachined }
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      # The daemons, only so their sources can be read. Nothing is installed and
-      # nothing is built: the checker is regexes over files on disk, which is
-      # what lets each repo run its own copy of it offline.
-      # `check_vendored_copies.py` looks for them beside this checkout, which is
-      # the same place they sit on a developer's machine.
-      - uses: actions/checkout@v4
-        with: { repository: braemons/triald, path: ../triald }
-      - uses: actions/checkout@v4
-        with: { repository: braemons/statemachined, path: ../statemachined }
-
+      # Nothing is installed and nothing is built. The checker is regexes over
+      # files on disk, which is what lets each repo run its own copy offline.
       - name: The vendored copies are still this one
+        working-directory: contracts
         run: make vendored

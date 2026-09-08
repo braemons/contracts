@@ -5,9 +5,15 @@ name: rig
 # together, and a job that built them from HEAD would be asking a different
 # question that each daemon's own CI already answers.
 #
-# Until the artifacts exist (see README.md, "The bootstrap gap") this job runs
-# the local path, and says so in its name so nobody mistakes it for the real
-# one.
+# Until the artifacts exist (see rig/README.md, "The bootstrap gap") this job
+# runs the local path against each daemon's **default branch**, and says so in
+# its name so nobody mistakes it for the real one. `rig_versions.toml` is
+# therefore documentation at the moment: nothing reads it yet, and the day
+# something does is the day this job stops building from source.
+#
+# The weekly run matters more here than on most suites. This one can go red
+# without anybody touching this repository, because its entire subject is three
+# things that move independently.
 
 on:
   push:
