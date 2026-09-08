@@ -1,25 +1,36 @@
-# The one claim this repo makes: these three releases work together.
+# The one claim this repo makes: these releases work together.
 #
-# Bumping a pin is a deliberate act. Nothing here floats to "latest" — a rig
+# Bumping a pin is a deliberate act. Nothing floats to "latest" — a rig
 # integration suite that silently followed three moving targets would report
 # breakage without saying which of the three moved, which is the one thing it
 # exists to answer.
+#
+# **Every asset name here was read off the release, not guessed.** An earlier
+# version of this file carried invented names; because the code that read them
+# fell through to a local path when nothing matched, the release path never ran
+# and nothing said so.
 
 [vstimd]
-# The renderer. Needs the compiled server binary, not only the Python client:
-# the tests drive a real one in null mode.
-version = "0.2.0"
-# The release asset to fetch, by the naming its release.yml already uses.
-asset = "vstimd-{version}-x86_64-unknown-linux-gnu.tar.gz"
+repo = "braemons/vstimd"
+tag = "v0.1.0"
+version = "0.1.0"
+# The server. `braemons-` is the archive's prefix; nothing inside the package
+# carries it.
+asset = "braemons-vstimd_{version}-1_amd64.deb"
+# The client, from PyPI, because that is where a script's author gets it.
+pypi = "vstimd-client"
+pypi_version = "0.1.0rc3"
 
 [statemachined]
-# The trial state machine. Needs the daemon (a Python package) and a device for
-# it to talk to. On a rig that device is an MCU; here it is the same firmware
-# built for the host that statemachined's own tests use.
-version = "0.1.0"
-asset = "statemachined-native-device-{version}-x86_64-linux"
+repo = "braemons/statemachined"
+tag = "v0.1.0-alpha1"
+version = "0.1.0.alpha1"
+asset = "statemachined_{version}-1_amd64.deb"
 
-[triald]
-# The decision authority. A Python package and nothing else — it has no native
-# half, which is why it is the only one of the three that needs no binary.
-version = "0.1.0"
+# triald has no release of any kind, and no packaging to make one from: the repo
+# has a systemd unit, sysusers and logrotate, but no nfpm config and no target
+# that builds a package. It is the only one of the three with no distributable
+# at all, which is why it has no pin here rather than a pin that would fail.
+#
+# It is also the one the tests import rather than run, so what it needs first is
+# a wheel on PyPI, not a .deb.

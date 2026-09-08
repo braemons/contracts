@@ -44,11 +44,7 @@ import pytest
 #: The rig half of the contracts repo — `rig/`, not the repo root.
 REPO = pathlib.Path(__file__).resolve().parents[1]
 
-#: Where a rig's vstimd answers, when one is already running. On a rig box it is
-#: started by systemd and owns the stimulus display; nothing here starts or stops
-#: it, because a renderer that a test could restart is a renderer that a test can
-#: leave a monitor black.
-DEFAULT_DISPLAY = "tcp://localhost:5555"
+#: The port a vstimd publishes events on, when one is already running.
 DEFAULT_EVENT_PORT = 5556
 
 #: Where the board is. Any pyserial URL, the same spelling statemachined's own
@@ -65,8 +61,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
     parser.addoption(
         "--display",
-        default=DEFAULT_DISPLAY,
-        help=f"ZMQ address of the rig's vstimd (default: {DEFAULT_DISPLAY}). --hardware only.",
+        default=None,
+        help="ZMQ address of a vstimd that is already running, e.g. "
+        "tcp://127.0.0.1:5555. Given, this suite attaches to it; omitted, it "
+        "starts one of its own. Deliberately no default: an earlier version "
+        "compared the option against a default string, so a container passing "
+        "that same string silently got a second renderer of its own.",
     )
     parser.addoption(
         "--event-port",
@@ -78,7 +78,14 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "--target",
         default=DEFAULT_TARGET,
         help=f"device path, host:port, or any pyserial URL (default: "
-        f"{DEFAULT_TARGET}). --hardware only.",
+        f"{DEFAULT_TARGET}). Only used when this suite starts the daemon.",
+    )
+    parser.addoption(
+        "--executor",
+        default=None,
+        help="base URL of a statemachined that is already running, e.g. "
+        "http://127.0.0.1:8081. Given, this suite attaches to it; omitted, it "
+        "starts one of its own.",
     )
 
 
@@ -108,7 +115,10 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list) -> None:
 
 @pytest.fixture(scope="session")
 def on_hardware(request: pytest.FixtureRequest) -> bool:
-    """Whether this run is against a real rig.
+    """Whether this run is against a real rig — wires, and a person.
+
+    Not the same as "the daemons are already running": a container attaches to
+    running daemons too. This is only about what is physically there.
 
     A test should need this only to *report* differently, never to assert
     differently. A test that asserts one thing locally and another on hardware
@@ -240,11 +250,9 @@ def display(request: pytest.FixtureRequest, tmp_path_factory) -> dict:
     the events a rig publishes — which is what lets the same tests run in both
     places.
     """
-    if request.config.getoption("--hardware"):
-        yield from _attached_display(
-            request.config.getoption("--display"),
-            request.config.getoption("--event-port"),
-        )
+    attached = request.config.getoption("--display")
+    if attached:
+        yield from _attached_display(attached, request.config.getoption("--event-port"))
     else:
         yield from _headless_display(request.getfixturevalue("vstimd_binary"), tmp_path_factory)
 
@@ -438,11 +446,35 @@ def _rig_config(device_target: str, tmp_path: pathlib.Path) -> pathlib.Path:
 def executor(request: pytest.FixtureRequest, tmp_path):
     """A statemachined serving, in front of a device.
 
-    On a rig, the board on `--target`. Locally, the same firmware compiled for
-    this host, on a socket. The daemon is spawned identically either way, so a
-    test that passes locally and fails on the bench has told you something about
-    the device — which is the only reason to own a bench.
+    **Attached, if one is already running** (`--executor`). That is what a
+    container and a rig both look like: the daemon is a service, started from
+    its unit with the config in `/etc/braemons`, and a test neither starts nor
+    stops it. Nothing in the fixture differs between the two — a rig is a
+    container with wires.
+
+    Otherwise this suite starts one, the way the unit does, in front of the same
+    firmware compiled for this host. That path is for developing; it is not what
+    `make test` runs.
     """
+    import httpx
+
+    attached = request.config.getoption("--executor")
+    if attached:
+        client = httpx.Client(base_url=attached, timeout=10.0)
+        try:
+            if client.get("/api/health").status_code != 200:
+                pytest.skip(f"statemachined at {attached} is not healthy")
+        except Exception as error:
+            pytest.skip(f"no statemachined at {attached}: {error}")
+        yield Executor(attached, client)
+        _leave_the_device_idle(client, attached)
+        client.close()
+        return
+
+    yield from _spawned_executor(request, tmp_path)
+
+
+def _spawned_executor(request: pytest.FixtureRequest, tmp_path):
     import httpx
 
     on_hardware = request.config.getoption("--hardware")
