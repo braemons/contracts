@@ -10,16 +10,16 @@ Every other repo in the family is a thing that runs —
 [console](https://github.com/braemons/console) shows them on one screen. This
 one runs nothing. It holds the contract they meet at.
 
-> **Status: a plan and an argument.** Most of what
-> [`INTERACTIONS.md`](INTERACTIONS.md) describes is not built. It is meant to be
-> argued with before any of it is.
+> **Status: the shape is settled and most of it is built.** `make test-e2e` in
+> statemachined runs one whole trial across two daemons, with triald driving.
+> What is left is listed in [`INTERACTIONS.md`](INTERACTIONS.md) §10.
 
 ## Read this first
 
-**[`INTERACTIONS.md`](INTERACTIONS.md)** — the catalogue. Every call between two
-daemons, its direction, its payload, and whether it exists yet. Plus the three
-defects in the one interaction that *is* wired up, where the end-to-end tests
-should live, and what is still undecided.
+**[`INTERACTIONS.md`](INTERACTIONS.md)** — the catalogue. Every message between
+two daemons, its direction, its payload, and whether it exists yet. Plus the
+defects that were found by writing it down, where the end-to-end tests live, and
+what is still undecided.
 
 vstimd's `proto/vstimd/v1/` can be read start to finish and it tells you the
 whole client-facing surface. Nothing played that role for the interactions
@@ -28,13 +28,54 @@ a serial protocol and a shared-memory layout, written down together only as a
 diagram repeated in three different `PLAN.md` files. `INTERACTIONS.md` is the
 document you read to review them.
 
+## Who knows about whom
+
+**One daemon knows the others, and it is triald.** That is not an accident and
+not a smell — it is what a decision authority is. Everything else is a
+participant, and a participant that knew who was watching would have acquired a
+consumer's problems.
+
+| | knows about | how |
+|---|---|---|
+| **vstimd** | nobody | renders; broadcasts what it saw on a PUB socket |
+| **statemachined** | nobody | runs a trial; writes what it did to its trace |
+| **triald** | both | commands them, and subscribes to what they publish |
+| **console** | all of them | shows them on one screen, and decides nothing |
+
+The rule underneath it: **a participant publishes what it observed and commands
+nobody; a decision authority commands its participants and subscribes to what
+they publish.**
+
+Both participants were built the other way round first, and both were wrong for
+the same reason. statemachined held a `triald_base_url` and posted each outcome
+to it; vstimd was going to answer per-trial questions about frame loss. A
+participant cannot know whether a consumer exists, or should, or is running a
+session — so **only a consumer can tell "not yet" from "never"**, and directing a
+message at a named one makes the participant responsible for a delivery it
+cannot reason about. It also buys it a config setting, a copy of somebody else's
+schema, a failure path and a retry policy, for a fact it should simply have
+stated.
+
+What that buys is the property the whole family is arranged around: **every
+participant runs with nothing else on the network.** Not a degraded mode — it is
+what a bench box does all day, and it is why the interfaces stay small. There is
+nothing to configure about a consumer that has no name.
+
 ## Why this is a separate repo
 
-None of the three daemon repos can own a cross-repo contract without inverting a
-dependency that is currently clean: statemachined knows triald's schema, triald
-knows nothing of statemachined, and vstimd knows neither. Putting the catalogue
-in triald would make triald the hub. Putting it in console would put domain logic
-in the one repo whose rule is that it has none.
+Not because triald must not be a hub — it is one, for *running* a rig, and
+`INTERACTIONS.md` argues that is correct. It is because the things in here are
+not triald's.
+
+The `.tdr` outcome taxonomy lives in five copies across two repos, including one
+in firmware that will never link a Python package. statemachined needs it to
+compile a graph on a bench with no triald anywhere. Putting the canonical copy
+in triald would make every other repo depend on the *decision authority* to know
+a shared vocabulary — which is a build dependency on the one daemon most likely
+to be absent.
+
+Putting the catalogue in console would put domain logic in the one repo whose
+rule is that it has none.
 
 **console and contracts are the two "how they fit together" repos, and they
 answer different questions.** console is how a rig looks on one screen; contracts
@@ -44,20 +85,28 @@ is what the daemons say to each other on the wire.
 
 **Not a place to put shared code.** No client library, no generated stubs, no
 package any daemon imports at build time. A daemon that cannot build without
-this repo is not optional any more, and every daemon being independently
-buildable is the property the whole architecture is arranged around.
+this repo is not optional any more.
 
-The files here are **vendored, not depended on**: a repo copies
-`outcomes.json` in and adds a test that its copy still matches. Drift becomes a
-red CI run instead of a rejected graph at 2 a.m. `INTERACTIONS.md` §7 has the
-long form of this argument, including why it is a data file and not a `.proto`.
+The files here are **vendored, not depended on**: each repo holds a
+byte-identical copy and checks its own sources against it, offline, in its own
+CI. Nothing reaches for this repository at build time — that would be a build
+dependency wearing a disguise, failing on a day this repo was unreachable for
+reasons having nothing to do with that one. `INTERACTIONS.md` §6 and §7 have the
+long form, including why it is a data file and not a `.proto`.
+
+## What is here
+
+| | |
+|---|---|
+| [`INTERACTIONS.md`](INTERACTIONS.md) | the catalogue, the argument, and the order of work |
+| `outcomes.json` | the `.tdr` outcome codes — the source of truth for five copies that had already drifted |
+| `check_outcomes.py` | vendored into each repo; reads that repo's own sources and holds them to the table |
+| `check_vendored_copies.py` | are the copies still this one? `--fix` syncs them. Run here, by whoever changes the taxonomy |
 
 ## What lands here next
 
 | | |
 |---|---|
-| `outcomes.json` | the eleven `.tdr` outcome codes, as `(name, value)` — the source of truth for the five copies that have already drifted |
-| `generate.py` | `outcomes.json` → a C++ `enum class`, a Python `IntEnum`, a JS array. Optional, and the only way to reach the firmware's copy |
 | `mdns.md` | the TXT record keys every braemons daemon publishes, and the `rig=` salt that lets a console tell which daemons are one rig |
 
 Order of work is `INTERACTIONS.md` §10.

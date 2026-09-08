@@ -23,11 +23,18 @@
 
 A fourth location, deliberately, and the smallest one that can work.
 
-None of the three repos can own a cross-repo contract without inverting a
-dependency that is currently clean: statemachined knows triald's schema, triald
-knows nothing of statemachined, and vstimd knows neither. Putting the catalogue
-in triald would make triald the hub; putting it in console would put domain
-logic in a repo whose whole rule is that it has none.
+**One daemon knows the others, and it is triald** — that is what a decision
+authority is (§2). vstimd and statemachined know nobody: they publish what they
+observed and command nothing.
+
+So the catalogue could go in triald, and it should not. The things here are not
+triald's. The `.tdr` taxonomy lives in five copies across two repos, one of them
+firmware that will never link a Python package, and statemachined needs it to
+compile a graph on a bench with no triald anywhere — putting the canonical copy
+in triald would make every other repo depend on the *decision authority* to know
+a shared vocabulary, which is a build dependency on the daemon most likely to be
+absent. Putting the catalogue in console would put domain logic in a repo whose
+whole rule is that it has none.
 
 **What this location is for:** the catalogue below, and the shared *vocabulary*
 in §6. **What it is emphatically not:** a place to put shared code. See §7.
@@ -631,10 +638,5 @@ nothing arrives (§9.7). Nothing in the loop waits on a promise nobody could
 keep.
 
 **Item 7 (mDNS) is next and is independent and small** — and vstimd's event
-stream needs a port advertised anyway, so it pairs with item 8
-(`braemons/vstimd#145`), which is the last of the three interactions.
-
-Item 7 is independent and small. Item 1's remainder — `outcomes.json` and
-`generate.py` — is the one that stops a class of bug rather than a bug; the
-conformance test now covers two of the five copies of the taxonomy, and the
-firmware header and triald's `app.js` are still hand-kept.
+stream needs a port advertised anyway, so a console can find it without being
+told.
