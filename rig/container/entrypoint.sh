@@ -26,19 +26,41 @@ log "configuring /etc/braemons"
 # point at without a board. Override it to reach a board on a cable.
 STATEMACHINED_DEVICE_TARGET="${STATEMACHINED_DEVICE_TARGET:-socket://127.0.0.1:5300}"
 
-python3 - "$STATEMACHINED_DEVICE_TARGET" <<'PY'
+# `expected_board` is the third edit and the least obvious, so it is worth
+# saying why it is here rather than treating it as boilerplate.
+#
+# The package ships `expected_board = "uno_r4_minima"`, and the device this
+# container runs identifies itself as `native`. statemachined refuses the
+# mismatch on purpose -- "its pin names may look right and mean different
+# holes, so nothing is pushed to it" -- and it is right to: a line map written
+# for one board silently addressing another board's pins is how a rig rewards
+# the wrong animal. So an operator running the packaged device has to say so,
+# and this is that step, not a workaround for it.
+EXPECTED_BOARD="${EXPECTED_BOARD:-native}"
+if [ "$STATEMACHINED_DEVICE_TARGET" != "socket://127.0.0.1:5300" ]; then
+  EXPECTED_BOARD="${EXPECTED_BOARD_OVERRIDE:-uno_r4_minima}"
+fi
+
+python3 - "$STATEMACHINED_DEVICE_TARGET" "$EXPECTED_BOARD" <<'PY'
 import pathlib, sys
 
-target = sys.argv[1]
+target, expected_board = sys.argv[1], sys.argv[2]
 config = pathlib.Path("/etc/braemons/statemachined-rig-config.toml")
 lines = [
     line
     for line in config.read_text().splitlines()
-    if not line.strip().startswith(("device_target", "startup_state_machine_config"))
+    if not line.strip().startswith(
+        ("device_target", "startup_state_machine_config", "expected_board")
+    )
 ]
-lines += [f'device_target = "{target}"', 'startup_state_machine_config = "bench"']
+lines += [
+    f'device_target = "{target}"',
+    f'expected_board = "{expected_board}"',
+    'startup_state_machine_config = "bench"',
+]
 config.write_text("\n".join(lines) + "\n")
-print(f"device_target = {target}")
+print(f"device_target  = {target}")
+print(f"expected_board = {expected_board}")
 PY
 
 # The state-machine config holds the line map — the wiring, written down. On a

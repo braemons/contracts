@@ -28,16 +28,24 @@ RUN apt-get update -qq \
 COPY artifacts/*.deb /tmp/artifacts/
 RUN apt-get update -qq \
  && apt-get install -y --no-install-recommends /tmp/artifacts/*.deb \
- && rm -rf /var/lib/apt/lists/* /tmp/artifacts
+ && rm -rf /var/lib/apt/lists/* /tmp/artifacts/*.deb
 
 # ── The client libraries ──────────────────────────────────────────────────────
 #
 # The two things an experiment script imports, installed the way a script's
 # author installs them. Not the daemons: those are services now, and nothing
 # here imports them.
+#
+# One comes from PyPI and one is a wheel from a GitHub release, and
+# requirements.txt names both -- triald is not on a registry, so its wheel is
+# fetched beside the .debs and installed from /tmp/artifacts. `--no-index` is
+# deliberately *not* set: vstimd-client is on PyPI and this is what a script's
+# author would run.
 COPY artifacts/requirements.txt /tmp/requirements.txt
+COPY artifacts/*.whl /tmp/artifacts/
 RUN python3 -m venv /opt/rig-tests \
- && /opt/rig-tests/bin/pip install --quiet --no-cache-dir -r /tmp/requirements.txt
+ && /opt/rig-tests/bin/pip install --quiet --no-cache-dir -r /tmp/requirements.txt \
+ && rm -rf /tmp/artifacts
 
 # ── The tests ─────────────────────────────────────────────────────────────────
 COPY tests /opt/rig-tests/tests

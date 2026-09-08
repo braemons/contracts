@@ -17,12 +17,19 @@ and lists what the release does have.
 from __future__ import annotations
 
 import pathlib
+import shutil
 import subprocess
 import sys
 import tomllib
 
 HERE = pathlib.Path(__file__).resolve().parent
 ARTIFACTS = HERE / "artifacts"
+
+#: Where container/Dockerfile copies the directory above. requirements.txt names
+#: any local wheel by this path rather than by a host one, because pip resolves
+#: a relative path against its own working directory and a host path does not
+#: exist in the image at all.
+CONTAINER_ARTIFACTS = "/tmp/artifacts"
 
 
 def assets_of(repo: str, tag: str) -> list[str]:
@@ -58,7 +65,19 @@ def fetch(repo: str, tag: str, pattern: str) -> bool:
 
 def main() -> int:
     pins = tomllib.loads((HERE / "rig_versions.toml").read_text())
-    ARTIFACTS.mkdir(exist_ok=True)
+
+    # Emptied, not merely created. `gh release download --clobber` overwrites a
+    # file of the same name and says nothing about one whose name has changed --
+    # so a bumped pin, or a package that was renamed, leaves the *previous*
+    # artifact sitting here and the image installs both. That is not
+    # hypothetical: braemons-statemachined 0.2 Conflicts with the statemachined
+    # 0.1 beside it, and the build failed with "held broken packages" rather
+    # than with anything naming the stale file.
+    #
+    # What is in this directory afterwards is exactly what the pins name.
+    if ARTIFACTS.exists():
+        shutil.rmtree(ARTIFACTS)
+    ARTIFACTS.mkdir()
 
     ok = True
     for name, entry in pins.items():
@@ -67,6 +86,13 @@ def main() -> int:
         if not repo or not pattern:
             continue
         ok &= fetch(repo, entry["tag"], pattern.format(version=entry["version"]))
+        # A wheel published as a release asset rather than to a registry. Same
+        # fetch, same directory: the image copies one directory and the whole
+        # input set is visible in one place.
+        if entry.get("wheel"):
+            ok &= fetch(
+                repo, entry["tag"], entry["wheel"].format(wheel_version=entry["wheel_version"])
+            )
 
     # What the test venv installs. Kept beside the .debs so the image copies one
     # directory and the whole input set is visible in one place.
@@ -75,9 +101,19 @@ def main() -> int:
         for entry in pins.values()
         if entry.get("pypi")
     ]
+    # A wheel fetched above, named by the path it will have *inside the image*
+    # rather than here. The container copies this directory to /tmp/artifacts,
+    # so a relative path would resolve against pip's working directory and a
+    # host path would not exist there at all.
+    requirements += [
+        f"{CONTAINER_ARTIFACTS}/{entry['wheel'].format(wheel_version=entry['wheel_version'])}"
+        for entry in pins.values()
+        if entry.get("wheel")
+    ]
     requirements += ["pytest>=8.3", "httpx>=0.28", "websockets>=13"]
     (ARTIFACTS / "requirements.txt").write_text("\n".join(requirements) + "\n")
-    print(f"  ✓ requirements.txt: {', '.join(requirements)}")
+    for line in requirements:
+        print(f"  ✓ requirements.txt: {line}")
 
     if not ok:
         print(

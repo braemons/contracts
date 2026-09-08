@@ -23,14 +23,31 @@ pypi_version = "0.1.0rc3"
 
 [statemachined]
 repo = "braemons/statemachined"
-tag = "v0.1.0-alpha1"
-version = "0.1.0.alpha1"
-asset = "statemachined_{version}-1_amd64.deb"
+tag = "v0.2.0-alpha1"
+# Note the spelling. The package version is `0.2.0~alpha1` -- the '~' is what
+# makes dpkg and rpm sort a pre-release *before* the release -- but nfpm writes
+# the filename with a '.'. Two spellings of one version, and this is the one
+# the file is called.
+version = "0.2.0.alpha1"
+# Renamed from plain `statemachined` at this release; the package Provides,
+# Conflicts and Replaces the old name, so an upgrade takes its files.
+asset = "braemons-statemachined_{version}-1_amd64.deb"
 
-# triald has no release of any kind, and no packaging to make one from: the repo
-# has a systemd unit, sysusers and logrotate, but no nfpm config and no target
-# that builds a package. It is the only one of the three with no distributable
-# at all, which is why it has no pin here rather than a pin that would fail.
+# triald is the one these tests *import* rather than run, so what it owes them is
+# a wheel -- and it publishes one beside the packages, which no other braemons
+# daemon does. Both are pinned: the .deb because an operator installs it, the
+# wheel because the tests need the outcome taxonomy and the trial-type models.
 #
-# It is also the one the tests import rather than run, so what it needs first is
-# a wheel on PyPI, not a .deb.
+# The two carry different spellings of one version, and neither is negotiable.
+# dpkg and rpm want `0.2.0.alpha1`; PEP 440 normalises the same tag to `0.2.0a1`.
+[triald]
+repo = "braemons/triald"
+tag = "v0.2.0-alpha1"
+version = "0.2.0.alpha1"
+asset = "braemons-triald_{version}-1_amd64.deb"
+# Not on PyPI -- publishing there is a separate decision with a token behind it,
+# and nothing needs it yet. So the wheel is a release asset, fetched like the
+# .deb and installed from the same directory. `wheel_version`, not `version`,
+# because of the spelling split above.
+wheel = "triald-{wheel_version}-py3-none-any.whl"
+wheel_version = "0.2.0a1"
