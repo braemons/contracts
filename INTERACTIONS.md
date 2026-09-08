@@ -1,10 +1,15 @@
 # The braemons daemon interactions
 
-> **Status: plan, and an argument.** §6 is not built. §8's stage 1 is, and so
-> are §5.1, §5.2 and the §7 conformance test — `make test-e2e` in statemachined
-> runs one whole trial across both daemons. §3 is a catalogue of what exists
-> today, with the gaps marked — it is meant to be checked against the code, not
-> trusted.
+> **Status: the shape is settled and half of it is built.** §5.1, §5.2, §8's
+> stage 1 and §9.1 are done — `make test-e2e` in statemachined runs one whole
+> trial across both daemons, with triald driving. §6 is not built, and §3C
+> (vstimd) is now an open issue rather than a design here. §3 is a catalogue of
+> what exists today, with the gaps marked — it is meant to be checked against
+> the code, not trusted.
+>
+> **The one thing to read if you read nothing else: §2's rule.** Every
+> interaction below now follows from it, and two of the three were rewritten
+> when it was stated.
 >
 > **Why this file exists.** vstimd's `proto/vstimd/v1/` can be read start to
 > finish and it tells you the whole client-facing surface. Nothing plays that
@@ -50,22 +55,60 @@ Three interactions on the slow bus, and their directions are now settled:
 
 | | | Direction | Rate |
 |---|---|---|---|
-| **A** | triald → statemachined | **push**, per trial | once per trial |
-| **B** | statemachined → triald | **push**, per trial | once per trial |
-| **C** | triald → vstimd | **pull**, per trial | once per trial |
+| **A** | triald → statemachined | **command**, per trial | once per trial |
+| **B** | statemachined ⇢ triald | **broadcast**, subscribed | every event |
+| **C** | vstimd ⇢ triald | **broadcast**, subscribed | every event |
 
-**B is a push, and the alternative is now dead code.** Both loops exist in the
-tree today: `statemachined/daemon/src/statemachined/triald_client.py` posts the
-outcome (push), while `triald/src/triald/behaviour.py`'s `BehaviourSource` has
-`arm()` then a blocking `result(trial_id)` (pull), and `runner.run_trial()`
-calls the pull one. Only the simulated path uses it. See §9.1.
+### The rule the three now follow
 
-**C is a pull, and that is the asymmetry worth noticing.** statemachined names
-the outcome, so it has something to say the moment a trial ends. vstimd only
-accumulates a fact — whether a frame was missed — that triald needs at the same
-moment. Making vstimd push it would mean vstimd learning the trial loop; asking
-for it costs one round trip inside the ITI, which is already where the other
-round trips hide.
+**A participant publishes what it observed and commands nobody. A decision
+authority commands its participants and subscribes to what they publish.**
+
+B and C were both designed the other way and both were wrong for the same
+reason. A participant cannot know whether a consumer exists, or should, or is
+running a session — statemachined's `triald_base_url` could be stale config for
+a box that was decommissioned. Directing a message at a named consumer makes the
+participant responsible for a delivery it cannot reason about, and buys it a
+config setting, a copy of somebody else's schema, a failure path and a retry
+policy, for a fact it should simply have stated.
+
+**Only a consumer can tell "not yet" from "never."** So the deadline belongs to
+whoever is waiting, and the interpretation belongs to whoever is deciding.
+
+What this buys, and it is the whole point: **every participant runs with nothing
+else on the network.** That is not a degraded mode, it is what a bench box does
+all day, and it is why the interfaces stay small — there is nothing to configure
+about a consumer that has no name.
+
+**B is a broadcast, and `triald_client.py` is gone.** statemachined has no
+client, no `triald_base_url`, no copy of triald's schema and no outbound call of
+any kind. Every trial's result goes into its trace with everything else it did,
+and `WS /api/trace/stream` is where anything reads it — lossless, and it names
+the entries a slow consumer lost rather than handing it a shorter answer that
+looks complete. `GET /api/trace/trial/{id}` recovers any trial exactly.
+
+`triald/src/triald/behaviour.py`'s `BehaviourSource` — `arm()` then a blocking
+`result(trial_id)` — stays as the **simulator's** seam and nothing else. On a
+rig, implementing it would mean blocking in a loop asking "is trial 7 done yet"
+for an event that was already published. See §9.1.
+
+**C is a broadcast, and follows B** — `braemons/vstimd#145`. It was designed as
+a pull: triald notes the frame counter at configure and asks for "drops since
+frame N" at result. That would work. It has two costs a stream does not:
+
+- **frame loss becomes the only thing anybody can ever learn.** Every further
+  fact — stimulus onset, a VTL edge, a present that missed — needs its own
+  request/response pair designed, named and versioned. A stream needs one more
+  message type.
+- **it is traffic on the REP socket**, the same one that carries scene commands,
+  dispatched under a write lock on `SceneState`. Cheap per trial, but it is
+  contention on the path that must not stall.
+
+**The asymmetry that made it look like a pull is real, and it survives.** vstimd
+only accumulates a *fact* — whether a frame was missed — while statemachined
+names an *outcome*. That is why vstimd must stay trial-blind (§9.6): it
+broadcasts frame-numbered facts and never learns what a trial is. **The consumer
+owns the join**, because the consumer is the only one that knows.
 
 **Everything time-critical is absent from this picture, and that is the point.**
 Stimulus onset reaching the state machine, and the state machine's response
@@ -207,14 +250,16 @@ Not interactions in the sense above — no request, no reply, no schema to revie
 |---|---|---|
 | triald picks a trial | `session.next_trial()`, `POST /api/trial/next` | ✅ |
 | triald names the graph for it | `TrialType.statemachine_graph` → `TrialSpec` → `TrialParameters` | ✅ |
-| triald configures statemachined | — | ❌ no client in triald |
+| triald configures statemachined | `StateMachineExecutor.configure` | ✅ |
 | statemachined arms the device | `POST /api/trial/configure` | ✅ |
 | start · cancel · result | `api/trial_routes.py` | ✅ |
 | device runs the trial | firmware, `device_supervisor`, native build on a socket | ✅ |
-| statemachined reports back | `triald_client.py` | ✅ §5.1 fixed |
+| statemachined publishes the result | the trace, `WS /api/trace/stream` | ✅ |
+| triald subscribes and translates | `triald.executor`, `api/statemachine_executor.py` | ✅ |
+| statemachined lists who is watching | `GET /api/observers`, Observers panel | ✅ |
 | triald counts, accepts, records | `session.report_outcome()`, `recording.py` | ✅ |
 | triald configures vstimd | — | ❌ neither side |
-| triald asks vstimd for frame loss | — | ❌ neither side, §3C |
+| vstimd broadcasts frame loss | — | ❌ `braemons/vstimd#145` |
 | readiness gate `configure→ready→start` | designed, `triald/dev/PLAN.md` | ❌ not built |
 
 ## 5. Three defects, all in interaction B
@@ -446,66 +491,45 @@ starts to earn itself**, and not before.
 
 ## 9. Open decisions
 
-1. ~~**Push or pull for the outcome**~~ **Settled: push, and nothing polls.**
-   `POST /api/trial/outcome` already is the push, and it works end to end.
-   What remains is not a wire question but two structural ones:
+1. ~~**Push or pull for the outcome**~~ **Settled: broadcast, and built.**
+   statemachined publishes to its trace and reports to nobody; triald subscribes
+   to `WS /api/trace/stream`, pulls a finished trial's events by id, and
+   translates them itself. `triald_client.py`, `triald_base_url` and the copy of
+   triald's schema are deleted. See §2's rule.
 
-   **`BehaviourSource` is simulator-only.** Its `arm(params)` / `result(trial_id)`
-   is a *pull*, and on a real rig implementing it would mean blocking in a loop
-   asking "is trial 7 done yet" for a message statemachined already sent unasked.
-   It stays exactly as it is — the seam that keeps `triald sim`, the debug
-   stepper and the tests on the real accounting — and `runner.run_trial()`
-   becomes explicitly the simulated loop rather than the rig's by accident. The
-   rig's loop is: `next_trial()` → configure the executor → *return*; the outcome
-   arrives later on its own thread and calls `report_outcome`.
+   **`BehaviourSource` is the simulator's seam and nothing else.** Its
+   `arm`/`result` is a pull, and on a rig implementing it would mean blocking in
+   a loop asking "is trial 7 done yet" for an event already published.
+   `runner.run_trial()` is explicitly the simulated loop now. The rig's loop is:
+   `next_trial()` → configure the executor → start → *return*; the outcome
+   arrives later from the subscription.
 
-   **Who else learns an outcome, and how — an observer registry?** The right
-   answer is layered, and mostly already built:
+   **The interpretation moved with it, and that is half the value.** statemachined
+   used to compute `reaction_time_ms` as "the last state a response left" — an
+   interpretation of behaviour, made on triald's behalf, by the daemon whose own
+   docs say it must never be a second decision authority. It now lives in
+   `triald.executor`, which imports nothing and is testable with dictionaries.
 
-   - *Outside triald:* triald already broadcasts every `SessionState` over
-     `WS /api/stream`, and statemachined has its own stream and trace. That
-     **is** the observer pattern, at the layer that can afford it: a subscriber
-     that dies costs nobody a record. Adding a "register a callback URL" list to
-     either daemon would rebuild it, statefully, worse.
-   - *The one exception is triald itself*, and it is a directed POST because
-     triald is a **named participant with a job**, not an audience: it decides
-     acceptance and writes the record, and a trial whose outcome nobody
-     received is a trial that never finishes. A broadcast has no addressee to
-     hold responsible for that.
+   **On an observer registry:** not one that the publisher serves. There is
+   nothing to register — opening the socket is subscribing, closing it is
+   leaving, and the daemon never acts on the list. It *keeps* one, and shows it
+   in its web UI (`GET /api/observers`), purely as a debugging aid: when trials
+   stop reaching triald, is nothing connected, or is something connected and
+   receiving nothing? Without that the answer is a packet capture. A name is
+   self-declared and grants nothing, because there is nothing to grant.
 
-     **But statemachined does not care whether the POST succeeded, and should
-     not.** It cannot know whether the delivery mattered: `triald_base_url` may
-     be stale config for a triald that was decommissioned, and the daemon has no
-     idea whether a session is running. So it retries nothing, buffers nothing,
-     blocks on nothing, and the trial is unaffected — it writes one
-     `sequence_gap` line to its own trace and carries on. That line survives on
-     a small claim, not a large one: it is a local diagnostic, and without it
-     "triald has 400 trials and this device ran 401" is unexplainable.
-     `triald_client` raising is a *library* declining to decide; the caller
-     decides, and the caller shrugs.
+   **Rule of thumb, worth keeping:** broadcast what may be *missed*, and let
+   whoever cares hold the deadline. Never make a publisher responsible for a
+   delivery it cannot reason about.
 
-     **Only the receiver can tell "not yet" from "never", which is a gap.**
-     `session.py` has no timeout on a trial in flight: it waits for an outcome
-     for ever, and a lost POST means a session that quietly stops. That is
-     triald's to fix and nobody else's — and the bound already exists on the
-     wire, since `cap_milliseconds` is what triald tells statemachined the trial
-     may take. When the outbound client lands (§10 item 5), the cap it sends is
-     exactly the deadline it should then arm. **New: §9.7.**
-   - *Inside triald:* `report_outcome` already fans out to the counters, the
-     recorder and the policy in a fixed order the accounting depends on. A
-     registry there would let a third party reorder or break it. Add one when
-     there is a second in-process consumer that is genuinely optional — not
-     before.
-
-   **Rule of thumb, worth keeping:** broadcast what may be *missed*, direct-send
-   what must be *recorded*. It is the fast/slow split again, one layer up.
 2. ~~**Where do graphs live in triald?**~~ **Settled: nowhere.** A trial type
    carries a graph *name* and nothing more; the graphs themselves live in the
    executor's store. triald has no opinion about where one sits in that store
    and never validates the name — an index would be a second, silent identity
    for the same thing, and triald owning graph bodies would make it the hub the
    family is built to avoid. Built in triald (`TrialType.statemachine_graph`,
-   replacing `time_sequence`). What remains of item 5 is the outbound client.
+   replacing `time_sequence`). The outbound client exists too:
+   `api/statemachine_executor.py`.
 3. **`start_source`.** `configure` takes `"serial"` or `"ttl"`. On a rig it
    should be `ttl` so reaction times need no clock sync; `serial` is the
    desk-testing path. Confirm the default per deployment, and whether triald
@@ -517,17 +541,24 @@ starts to earn itself**, and not before.
 5. ~~**Which spelling of code 8 wins**~~ **Settled: `UNEXPECTED`, the correct
    one.** The *value* is the contract; the name only has to match itself, and
    there is no compatibility to keep with VStim. All five copies now agree.
-6. **§3C shape 1 or 2** — does vstimd learn `trial_id`, or stay trial-blind?
-7. **A deadline on the trial in flight.** `Session.next_trial()` sets
-   `_current` and nothing ever expires it. On the simulated path the outcome is
-   synchronous so it cannot matter; on the rig path the outcome arrives over a
-   network from a daemon that may have crashed, and today a lost POST is a
-   session that stops with no error anywhere in triald. What should happen when
-   the deadline passes: `CANCELLED` (code 10, which exists and means "aborted"),
-   or `UNDETERMINED` (-1, which is the value a trial has *while* running and is
-   not declarable)? Neither is quite "the executor went silent". Decide the
-   outcome before writing the timer. Blocked on nothing; wants doing with §10
-   item 5, since that is when triald starts sending the cap it would wait on.
+6. ~~**§3C shape 1 or 2**~~ **Settled: vstimd stays trial-blind**, and the
+   broadcast is what makes that work. It publishes frame-numbered facts and
+   never learns what a trial is; the consumer owns the join, because the
+   consumer is the only one that knows. `braemons/vstimd#145`.
+7. **A deadline on the trial in flight — the one thing the broadcast model
+   needs that is not built.** `Session.next_trial()` sets `_current` and nothing
+   ever expires it. On the simulated path the outcome is synchronous so it
+   cannot matter; on a rig it arrives from a subscription to a daemon that may
+   have crashed, and nobody is responsible for delivering it — correctly so. A
+   dead subscriber is therefore a session that quietly stops, with no error
+   anywhere. The bound already exists on the wire: `cap_milliseconds` is what
+   triald tells the executor a trial may take.
+
+   **What is undecided is the outcome an expired trial gets.** `CANCELLED` (10)
+   means "aborted by the experimenter", which is not true. `UNDETERMINED` (-1)
+   is the value a trial holds *while* running and is not declarable. Neither
+   says "the executor went silent", so this is a taxonomy question before it is
+   a timer. Decide it before writing the timer.
 
 ## 10. Order of work
 
@@ -537,19 +568,27 @@ starts to earn itself**, and not before.
 | 2 | ~~`trial_id` on triald's `OutcomeReport`~~ **done** | — |
 | 3 | ~~The OpenAPI conformance test in statemachined (§7)~~ **done** | — |
 | 4 | ~~**Stage 1 e2e**~~ **done** | — |
-| 5 | ~~Answer §9.2; a `graph` on the trial type~~ **done**; triald's outbound client | — |
-| 6 | **Stage 2 e2e** — triald initiates | 5 |
+| 5 | ~~Answer §9.2; a `graph` on the trial type; triald's outbound client~~ **done** | — |
+| 6 | ~~**Stage 2 e2e** — triald initiates~~ **done** (10 tests, `make test-e2e`) | — |
 | 7 | `mdns.md`; `rig=` in both daemons; vstimd's TXT records and web port | — |
-| 8 | §3C: the vstimd message, and per-trial or windowed frame-loss accounting | §9.6 |
+| 8 | §3C: vstimd's event stream — `braemons/vstimd#145` | — |
 | 9 | **Stage 3 e2e**, and decide whether `rig-integration` exists | 8 |
+| 10 | **§9.7: a deadline on the trial in flight in triald** — the one thing the broadcast model needs that is not built | — |
 
-**Next is item 5's remainder: triald's outbound client.** Everything it needs
-now exists — trial types name a graph, statemachined's `configure` route takes
-one, and the e2e harness already drives both daemons in one process, so stage 2
-is a rewrite of `run_one_trial` rather than new infrastructure. The open
-question is where the client hangs: a `BehaviourSource` implementation would
-reuse `runner.run_trial`, but that interface is a *pull* (`arm` then
-`result(trial_id)`) and the outcome is a push, so it fits badly. §9.1.
+**Next is item 10, and it is the load-bearing one.** Under the broadcast model
+nobody is responsible for delivering an outcome to triald, which is correct —
+and it means triald must notice for itself when one does not arrive. Today
+`Session.next_trial()` sets `_current` and nothing ever expires it, so a
+subscriber that dies is a session that quietly stops with no error anywhere. The
+bound already exists on the wire: `cap_milliseconds` is what triald tells the
+executor a trial may take. What is undecided is the *outcome* an expired trial
+gets — see §9.7.
+
+Item 7 (mDNS) is independent and small, and vstimd's event stream needs a port
+advertised anyway. Item 1's remainder — `outcomes.json` and `generate.py` — is
+the one that stops a class of bug rather than a bug: the taxonomy is spelled the
+same in all five copies now, but nothing holds it there since the conformance
+test went away with the transcription it was checking.
 
 Item 7 is independent and small. Item 1's remainder — `outcomes.json` and
 `generate.py` — is the one that stops a class of bug rather than a bug; the
