@@ -272,8 +272,8 @@ def _attached_display(address: str, event_port: int):
     yield {"address": address, "event_port": event_port, "log": None}
 
 
-def _headless_display(vstimd_binary: pathlib.Path, tmp_path_factory):
-    """A vstimd of this test run's own, touching nothing that outlives it.
+def _start_display(vstimd_binary: pathlib.Path, scratch: pathlib.Path, ports=None):
+    """One vstimd, on ports of its own, touching nothing that outlives it.
 
     Two things here are isolation rather than configuration, and both are the
     difference between a suite you can run on your own workstation and one you
@@ -283,65 +283,127 @@ def _headless_display(vstimd_binary: pathlib.Path, tmp_path_factory):
     `/var/lib/braemons/vstimd`, then `~/.local/braemons/vstimd` -- so a test
     server seeds demo scene-configs into the real one, writes a `_last_session`
     slot over whatever was there, and a developer's saved work is quietly a test
-    run's leftovers. A temporary directory per session ends that.
+    run's leftovers. A temporary directory per server ends that.
 
     **The shared-memory name.** The virtual trigger lines live at a POSIX shm
     segment whose default name is the fixed `/vstimd_vtl`, so two vstimd
     processes on one host share it -- a test run and a rig, or two test runs at
     once, writing each other's trigger lines. It is a rig-config setting, so a
-    per-run name is a two-line file rather than a change to vstimd.
+    per-server name is a two-line file rather than a change to vstimd.
+
+    `ports` reuses an earlier server's, which is what a *restart* is: the same
+    address coming back, so a subscriber that was attached to it reconnects
+    rather than being handed a different rig.
     """
     from vstimd import Connection
 
-    command_port, event_port = distinct_ports(2)
-    scratch = tmp_path_factory.mktemp("vstimd")
+    command_port, event_port = ports or distinct_ports(2)
     log = scratch / "vstimd.log"
     storage = scratch / "storage"
-    storage.mkdir()
+    storage.mkdir(exist_ok=True)
 
-    # Unique per process, and short: Linux caps a POSIX shm name at NAME_MAX.
+    # Unique per server, and short: Linux caps a POSIX shm name at NAME_MAX.
     rig_config = scratch / "rig-config.toml"
-    rig_config.write_text(f'[vtl]\nshm_name = "/vstimd_test_{os.getpid()}"\n')
+    rig_config.write_text(f'[vtl]\nshm_name = "/vstimd_test_{os.getpid()}_{command_port}"\n')
 
-    with log.open("w") as sink:
-        proc = subprocess.Popen(
-            [
-                str(vstimd_binary),
-                "--null",
-                "--zmq-port",
-                str(command_port),
-                "--event-port",
-                str(event_port),
-                "--no-web",
-                "--storage-dir",
-                str(storage),
-                "--rig-config",
-                str(rig_config),
-            ],
-            stdout=sink,
-            stderr=subprocess.STDOUT,
-            env={**os.environ, "RUST_LOG": "info"},
-        )
-        address = f"tcp://localhost:{command_port}"
+    sink = log.open("a")
+    proc = subprocess.Popen(
+        [
+            str(vstimd_binary),
+            "--null",
+            "--zmq-port",
+            str(command_port),
+            "--event-port",
+            str(event_port),
+            "--no-web",
+            "--storage-dir",
+            str(storage),
+            "--rig-config",
+            str(rig_config),
+        ],
+        stdout=sink,
+        stderr=subprocess.STDOUT,
+        env={**os.environ, "RUST_LOG": "info"},
+    )
+    address = f"tcp://localhost:{command_port}"
 
-        def answering() -> bool:
-            if proc.poll() is not None:
-                pytest.fail(f"vstimd exited at once:\n{log.read_text()}")
-            try:
-                with Connection(address, recv_timeout_s=1.0) as probe:
-                    probe.system.wait_for_frames(0)
-                return True
-            except Exception:
-                return False
+    def answering() -> bool:
+        if proc.poll() is not None:
+            pytest.fail(f"vstimd exited at once:\n{log.read_text()}")
+        try:
+            with Connection(address, recv_timeout_s=1.0) as probe:
+                probe.system.wait_for_frames(0)
+            return True
+        except Exception:
+            return False
 
-        if not wait_until(answering, timeout_s=20.0):
-            proc.terminate()
-            pytest.fail(f"vstimd never answered:\n{log.read_text()}")
-
-        yield {"address": address, "event_port": event_port, "log": log}
-
+    if not wait_until(answering, timeout_s=20.0):
         proc.terminate()
-        proc.wait(timeout=5)
+        sink.close()
+        pytest.fail(f"vstimd never answered:\n{log.read_text()}")
+
+    info = {
+        "address": address,
+        "event_port": event_port,
+        "log": log,
+        "ports": (command_port, event_port),
+    }
+    return proc, sink, info
+
+
+def _headless_display(vstimd_binary: pathlib.Path, tmp_path_factory):
+    """A running vstimd in null mode: no display, a real frame clock.
+
+    Null mode is not a lesser path. It runs the same per-frame drain as the
+    display backends, so the events it publishes are the events a rig publishes
+    -- which is the whole reason this test can run without a monitor attached.
+    """
+    scratch = tmp_path_factory.mktemp("vstimd")
+    proc, sink, info = _start_display(vstimd_binary, scratch)
+    try:
+        yield info
+    finally:
+        _stop(proc)
+        sink.close()
+
+
+class RestartableDisplay:
+    """A renderer this test owns, and may stop and bring back.
+
+    **Its own, never the rig's.** A restart resets the frame counter, and a
+    subscriber holding a frame index across one is holding a number from a
+    different run -- which is exactly what `server.started` exists to tell it,
+    and exactly why nothing may do this to a display somebody else is attached
+    to. So this always spawns, even when `--display` named one, and the one it
+    spawns is on ports of its own.
+    """
+
+    def __init__(self, vstimd_binary: pathlib.Path, scratch: pathlib.Path) -> None:
+        self._binary = vstimd_binary
+        self._scratch = scratch
+        self._proc, self._sink, self.info = _start_display(vstimd_binary, scratch)
+
+    def restart(self) -> None:
+        """Stop it and bring it back on the same ports, as a power cut would."""
+        _stop(self._proc)
+        self._sink.close()
+        self._proc, self._sink, self.info = _start_display(
+            self._binary, self._scratch, ports=self.info["ports"]
+        )
+
+    def close(self) -> None:
+        _stop(self._proc)
+        self._sink.close()
+
+
+@pytest.fixture
+def restartable_display(vstimd_binary: pathlib.Path, tmp_path_factory):
+    """A renderer of this test's own, which it may restart. See above."""
+    display = RestartableDisplay(vstimd_binary, tmp_path_factory.mktemp("vstimd-restart"))
+    try:
+        yield display
+    finally:
+        display.close()
 
 
 @pytest.fixture(scope="session")

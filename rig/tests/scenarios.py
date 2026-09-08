@@ -14,7 +14,27 @@ them readable as a description of the rig's loop.
 from __future__ import annotations
 
 import dataclasses
+import itertools
+import time
 from typing import Any
+
+#: Trial ids nothing else in this run will reuse.
+#:
+#: A trial id is the *executor's* key, and an executor on a rig is a daemon that
+#: has been up for weeks: `GET /api/trial/<id>` searches a trace holding every
+#: trial anybody has run. So two tests that both call their trial "1" do not get
+#: a fresh one each -- they get one trial with two results, and the executor
+#: refuses that ("one trial ends once") rather than picking. Found by running
+#: the suite against an attached daemon, where it is true; invisible against a
+#: spawned one, where every test gets a new trace.
+#:
+#: Seeded from the clock so that two *runs* against one long-lived rig do not
+#: collide either, which is the same problem one loop further out.
+_trial_ids = itertools.count(int(time.time()) % 100_000 * 10)
+
+
+def unique_trial_id() -> int:
+    return next(_trial_ids)
 
 
 def timed_graph(name: str, milliseconds: int = 60, outcome: str = "HIT") -> dict:
@@ -111,7 +131,7 @@ def run_one_trial(
     executor,
     observer,
     graph: str,
-    trial_id: int = 1,
+    trial_id: int | None = None,
     cap_milliseconds: int = 10_000,
     while_running=None,
 ) -> Ran:
@@ -126,6 +146,12 @@ def run_one_trial(
     the two suites diverge, and it diverges by adding, never by replacing.
     """
     from triald.executor import TrialConfiguration
+
+    # Never a default of 1: see unique_trial_id above. A caller that wants a
+    # particular number says so; a caller that just wants "a trial" gets one
+    # nothing else in this run will claim.
+    if trial_id is None:
+        trial_id = unique_trial_id()
 
     first_frame = display_connection.system.wait_for_frames(0).frame_count
     observer.open_window(first_frame=first_frame)

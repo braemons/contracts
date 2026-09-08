@@ -26,44 +26,19 @@ import json
 import time
 
 import pytest
-
-
-def timed_graph(name: str, milliseconds: int = 60) -> dict:
-    """A graph that waits and then declares HIT, with nothing to press.
-
-    Nothing here drives an input line — that needs a wire — so the graph reaches
-    its outcome on a timeout. Everything above the trigger still runs: the
-    compiler, the framing, the device's scan loop, the trace.
-    """
-    return {
-        "name": name,
-        "entry": "Wait",
-        "distributions": {"dwell": {"kind": "fixed", "duration_ms": milliseconds}},
-        "states": [
-            {
-                "name": "Wait",
-                "on_entry": [{"line": "ready_lamp", "kind": "high"}],
-                "timeout": {"after": "dwell", "goto": "Hit"},
-            },
-            {"name": "Hit", "outcome": "HIT"},
-        ],
-    }
+import scenarios
+from conftest import wait_until
 
 
 @pytest.fixture
 def armed_executor(executor):
     """A statemachined with one graph uploaded to the device, ready to run.
 
-    Two steps, and they are different things: `PUT /api/graphs/<name>` stores a
-    graph, `POST /api/session/graphs` compiles the named set and sends it to the
-    device. A trial can only name a graph the device is holding.
+    The graph comes from `scenarios`, which the acceptance suite also uses. This
+    file used to carry a second copy of it -- and a second copy of the trial loop
+    -- which is the drift scenarios.py exists to prevent, pointing the wrong way.
     """
-    assert executor.put("/api/graphs/show", json=timed_graph("show")).status_code in (
-        200,
-        201,
-    )
-    response = executor.post("/api/session/graphs", json={"graph_names": ["show"]})
-    assert response.status_code == 200, response.text
+    scenarios.upload(executor, scenarios.timed_graph("show"))
     return executor
 
 
@@ -238,3 +213,247 @@ def test_the_observer_survives_a_trial_it_was_not_watching(display, armed_execut
         assert observer.close_window(last_frame=1) is None
     finally:
         observer.close()
+
+
+# ── The three things one happy trial could not reach ──────────────────────────
+#
+# The tests above run one trial, it succeeds, and the display drops nothing.
+# That leaves three gaps which nothing else in the family covers either, because
+# each of them needs all three daemons to be real at once.
+
+
+def test_two_trials_keep_their_own_frames_and_their_own_outcomes(display, armed_executor):
+    """A session is trials, plural, and the second must not inherit the first.
+
+    One trial cannot show that a window closes cleanly enough for the next one
+    to open — the observer's own suite tests that against a fake source, and
+    statemachined's tests that trial numbers do not bleed, but neither has a
+    renderer's clock in it. What is unproven until here is that two consecutive
+    windows come back with *different, advancing* frames from a real display and
+    each with its own outcome.
+    """
+    from triald.api.statemachine_executor import StateMachineExecutor
+    from triald.api.stimulus_subscriber import StimulusObserver, connect
+    from triald.executor import TrialConfiguration
+    from vstimd import Connection
+
+    observer = StimulusObserver(connect("127.0.0.1", display["event_port"]))
+    observer.start()
+    executor = StateMachineExecutor(base_url=armed_executor.base_url)
+
+    windows = []
+    # Unique, not 1 and 2: the executor may be a daemon that has been up for
+    # weeks, and a trial id is its key. See scenarios.unique_trial_id.
+    trial_ids = [scenarios.unique_trial_id(), scenarios.unique_trial_id()]
+    try:
+        with Connection(display["address"], recv_timeout_s=10.0) as renderer:
+            for trial_id in trial_ids:
+                first_frame = renderer.system.wait_for_frames(0).frame_count
+                observer.open_window(first_frame=first_frame)
+
+                executor.configure(
+                    TrialConfiguration(
+                        trial_id=trial_id,
+                        statemachine_graph="show",
+                        cap_milliseconds=5000,
+                    )
+                )
+                executor.start(trial_id)
+                with armed_executor.trace_stream() as messages:
+                    assert next(executor.finished_trials(messages)) == trial_id
+
+                outcome = executor.outcome_of(trial_id=trial_id)
+                assert outcome is not None, f"trial {trial_id} reported nothing"
+                assert outcome.outcome.name == "HIT", outcome
+
+                last_frame = renderer.system.wait_for_frames(0).frame_count
+                window = observer.close_window(last_frame=last_frame)
+                assert window is not None
+                windows.append(window)
+    finally:
+        observer.close()
+
+    first, second = windows
+    # Disjoint and in order. Not merely different: a second window that began
+    # before the first ended would mean the loop lost track of a trial, and the
+    # observer discards rather than merges precisely so that cannot pass quietly.
+    assert second.first_frame >= first.last_frame, (
+        f"the second trial's window began at frame {second.first_frame}, which is "
+        f"before the first one ended at {first.last_frame} — the windows overlap"
+    )
+    assert first.last_frame > first.first_frame
+    assert second.last_frame > second.first_frame
+    assert not first.uncertain and not second.uncertain
+
+
+def test_a_trial_nobody_reports_the_end_of_is_the_consumers_to_end(display, armed_executor):
+    """**Only the side that is waiting can tell "not yet" from "never".**
+
+    The rule the whole family rests on, and the one outcome triald assigns to
+    itself. An executor publishes what it saw and assumes nobody read it — it
+    cannot know whether a consumer exists — so nothing is responsible for
+    delivering an outcome, and a subscription that dies would otherwise be a
+    session that stops with no error anywhere.
+
+    Every other test here runs a trial that finishes. This one runs a trial that
+    is still going when triald's patience runs out: a graph waiting far longer
+    than the session's cap. The device is fine, the executor is fine, nobody has
+    failed — and triald still has to write something down, because a gap in the
+    trial numbering is a thing somebody has to explain months later.
+    """
+    import datetime
+
+    from triald import Session, TrialOutcome
+    from triald.api.statemachine_executor import StateMachineExecutor
+    from triald.cli import demo_experiment
+    from triald.executor import TrialConfiguration
+
+    store, config = demo_experiment()
+    # Short enough that the test is quick, long enough that a slow container is
+    # not what ends the trial.
+    config.trial_cap_ms = 1500
+    session = Session(store, config)
+    session.arm()
+
+    # A graph whose wait outlasts the cap by a wide margin. The device's own
+    # watchdog is set well beyond both, so nothing but triald ends this trial.
+    patient = scenarios.timed_graph("patient", milliseconds=30_000)
+    scenarios.upload(armed_executor, patient)
+
+    executor = StateMachineExecutor(base_url=armed_executor.base_url)
+    spec = session.next_trial()
+    trial_id = spec.trial_number
+
+    # Whatever the executor already holds under this number, from an earlier
+    # session on a long-lived rig. The assertion at the end is that this test
+    # added nothing to it.
+    already = _finished_results_for(armed_executor, trial_id)
+
+    executor.configure(
+        TrialConfiguration(
+            trial_id=trial_id, statemachine_graph="patient", cap_milliseconds=60_000
+        )
+    )
+    executor.start(trial_id)
+
+    try:
+        deadline = datetime.datetime.now() + datetime.timedelta(seconds=15)
+        record = None
+        while record is None and datetime.datetime.now() < deadline:
+            record = session.expire_overdue_trial()
+            if record is None:
+                time.sleep(0.1)
+    finally:
+        # The device is still running the trial: this test ended triald's
+        # interest in it, not the trial. Leave the rig idle for the next test.
+        armed_executor.post("/api/trial/cancel", json={"reason": "OTHER"})
+
+    assert record is not None, (
+        f"triald never gave up on trial {trial_id}: a cap of "
+        f"{config.trial_cap_ms} ms expired and nothing was recorded"
+    )
+    assert record.report.outcome is TrialOutcome.NEVER_FINISHED, record
+    # Recorded, and never accepted: it consumes nothing from the round and moves
+    # no stop rule. A trial nobody watched must not look like a trial that ran.
+    assert not record.accepted, "a trial nobody reported the end of was accepted"
+    assert record.spec.trial_number == trial_id
+    # The note says what happened, because a NEVER_FINISHED somebody reads in a
+    # year is otherwise indistinguishable from a rig that was simply switched off.
+    assert str(trial_id) in (record.report.note or ""), record.report.note
+
+    # And the executor is not at fault and never was: it published no result for
+    # this trial, because there was none to publish.
+    #
+    # Asserted as a delta rather than an absolute. triald numbers its own trials
+    # from 1, so on a rig whose statemachined has been up for weeks this id has
+    # very likely been used before by somebody else's session — which is a real
+    # property of the rig and not this test's business.
+    assert _finished_results_for(armed_executor, trial_id) == already, (
+        f"the executor published a result for trial {trial_id} after all"
+    )
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "server.started cannot reach the subscriber that needs it. It is published "
+        "once, at startup, and a SUB socket that was attached to the previous "
+        "process has not finished reconnecting yet — measured: the reconnect works "
+        "(a command after the restart is received) but nothing spontaneous crosses. "
+        "A subscriber attaching later misses it for the ordinary slow-joiner "
+        "reason. So in practice the topic is delivered to nobody, and a window "
+        "spanning a restart is reported clean with frame numbers from two "
+        "different runs. Fix belongs in vstimd: a run id on every event, since "
+        "ZeroMQ PUB has no retained message to re-deliver. Strict, so this turns "
+        "red the day it is fixed."
+    ),
+)
+def test_a_restart_reaches_the_observer_through_the_stream_it_really_subscribes_to(
+    restartable_display,
+):
+    """**The production path, carrying a real event for once.**
+
+    `StimulusObserver` subscribes to exactly two topics — `frame.dropped` and
+    `server.started` — and in a clean headless run neither ever arrives. So the
+    observer's own suite drives it with a fake source, the three-daemon test
+    above builds a real one that receives nothing, and the two halves have never
+    met: every assertion about a window passes on an event stream that was
+    silent, and a decode that did not work would look exactly the same.
+
+    A restart is the one of the two topics a test can cause. It is also the case
+    that matters most for correctness, because a restart resets the frame
+    counter: a window spanning one is a window whose numbers come from two
+    different runs, and calling it clean would put a fabricated frame count on a
+    trial's record.
+
+    This owns its renderer — see `RestartableDisplay`. Restarting one somebody
+    else is attached to would be doing to another test what this one is testing.
+    """
+    from triald.api.stimulus_subscriber import StimulusObserver, connect
+
+    observer = StimulusObserver(connect("127.0.0.1", restartable_display.info["event_port"]))
+    observer.start()
+    try:
+        # PUB discards anything sent before a subscription lands, so the socket
+        # has to be attached before the restart it is here to hear about.
+        time.sleep(1.0)
+
+        observer.open_window(first_frame=1)
+        restartable_display.restart()
+
+        def the_observer_noticed() -> bool:
+            return observer.last_frame_seen is not None
+
+        assert wait_until(the_observer_noticed, timeout_s=20.0), (
+            "the observer received nothing across a restart of the display it is "
+            "subscribed to — `server.started` never arrived, or never decoded"
+        )
+
+        window = observer.close_window(last_frame=2)
+    finally:
+        observer.close()
+
+    assert window is not None
+    # The whole point: a window spanning a restart is not trustworthy, and the
+    # observer says so rather than reporting a clean trial with frame numbers
+    # from two different runs of the renderer.
+    assert window.uncertain, (
+        "a window spanning a restart of the display was reported clean — the "
+        "frame counter reset underneath it and nothing said so"
+    )
+
+
+def _finished_results_for(executor_client, trial_id: int) -> int:
+    """How many finished results the executor holds for one trial id.
+
+    Counted through the API rather than the client's `outcome_of`, because that
+    one refuses a trial with no result *and* a trial with two — and this test
+    needs to tell those apart rather than catch either.
+    """
+    response = executor_client.get(f"/api/trial/{trial_id}")
+    if response.status_code != 200:
+        return 0
+    events = response.json()
+    if isinstance(events, dict):
+        events = events.get("events", [])
+    return sum(1 for event in events if event.get("kind") in ("trial_result", "result"))
