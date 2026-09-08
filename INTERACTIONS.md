@@ -275,12 +275,18 @@ unparseable at the far end; and graphs name outcomes by string —
 keyed by name — so a graph authored from triald's vocabulary is refused at
 compile, by a person with both spellings in front of them in two web UIs.
 
-**Confirmed and fixed: the typo wins.** `VStimLib/TDR.h:33` declares
-`InexpectedStartSignal`, and `GetTrialOutcomeString` returns that literal —
-so the misspelling is written into every `.tdr` the lab has and is the wire
-contract, not a mistake a copy may quietly correct. statemachined's daemon
-(`model/trial_outcome.py`) and its graph store panel now spell it
-`INEXPECTED_START_SIGNAL`, and all five copies agree.
+**Fixed: the correct spelling wins.** `VStimLib/TDR.h:33` does declare
+`InexpectedStartSignal`, but **the value is the wire contract, not the name.**
+8 is what a `.tdr` holds and what an analysis script reads; nothing in this
+family needs to read a name VStim wrote, and there is no backwards
+compatibility to keep with it. Inheriting the typo would mean carrying a
+misspelling in two web UIs, an acceptance flag and every graph file for as long
+as the family exists.
+
+So all five copies now say `UNEXPECTED_START_SIGNAL`: triald's enum, its
+acceptance flag (`unexpected_start_signal`, on the wire too), its web UI,
+statemachined's firmware header, its core test, its daemon and its graph
+panel.
 
 An assertion holds them there:
 `daemon/tests/unit/test_the_outcome_report_matches_trialds_schema.py` compares
@@ -440,11 +446,41 @@ starts to earn itself**, and not before.
 
 ## 9. Open decisions
 
-1. **Push or pull for the outcome — settled as push; the pull path should go.**
-   `BehaviourSource`'s `arm`/`result` stays as the *simulator's* seam (that is
-   what makes `triald sim` exercise the real accounting), but `runner.run_trial()`
-   calling it is the real trial loop only by accident. Decide whether
-   `run_trial` becomes simulator-only or is replaced by the API path.
+1. ~~**Push or pull for the outcome**~~ **Settled: push, and nothing polls.**
+   `POST /api/trial/outcome` already is the push, and it works end to end.
+   What remains is not a wire question but two structural ones:
+
+   **`BehaviourSource` is simulator-only.** Its `arm(params)` / `result(trial_id)`
+   is a *pull*, and on a real rig implementing it would mean blocking in a loop
+   asking "is trial 7 done yet" for a message statemachined already sent unasked.
+   It stays exactly as it is — the seam that keeps `triald sim`, the debug
+   stepper and the tests on the real accounting — and `runner.run_trial()`
+   becomes explicitly the simulated loop rather than the rig's by accident. The
+   rig's loop is: `next_trial()` → configure the executor → *return*; the outcome
+   arrives later on its own thread and calls `report_outcome`.
+
+   **Who else learns an outcome, and how — an observer registry?** The right
+   answer is layered, and mostly already built:
+
+   - *Outside triald:* triald already broadcasts every `SessionState` over
+     `WS /api/stream`, and statemachined has its own stream and trace. That
+     **is** the observer pattern, at the layer that can afford it: a subscriber
+     that dies costs nobody a record. Adding a "register a callback URL" list to
+     either daemon would rebuild it, statefully, worse.
+   - *The one exception is triald itself*, and it is why the outcome is a
+     directed POST and not a broadcast: triald must **own** the record, so the
+     sender needs delivery to have failed loudly. `triald_client` raises rather
+     than swallowing, and the daemon writes a `sequence_gap` to its trace. A
+     broadcast has no such guarantee, and a hole in a session's record is not
+     something to discover at analysis time.
+   - *Inside triald:* `report_outcome` already fans out to the counters, the
+     recorder and the policy in a fixed order the accounting depends on. A
+     registry there would let a third party reorder or break it. Add one when
+     there is a second in-process consumer that is genuinely optional — not
+     before.
+
+   **Rule of thumb, worth keeping:** broadcast what may be *missed*, direct-send
+   what must be *recorded*. It is the fast/slow split again, one layer up.
 2. ~~**Where do graphs live in triald?**~~ **Settled: nowhere.** A trial type
    carries a graph *name* and nothing more; the graphs themselves live in the
    executor's store. triald has no opinion about where one sits in that store
@@ -460,16 +496,16 @@ starts to earn itself**, and not before.
    `configure → ready → start` across every registered participant. With two
    participants and one of them trial-blind, is the gate worth building now, or
    is "configure returned 200" the readiness answer until there is a third?
-5. ~~**Which spelling of code 8 wins**~~ **Settled: `Inexpected`, the typo.**
-   `VStimLib/TDR.h:33` and `GetTrialOutcomeString` put that literal in every
-   `.tdr`. All five copies now agree.
+5. ~~**Which spelling of code 8 wins**~~ **Settled: `UNEXPECTED`, the correct
+   one.** The *value* is the contract; the name only has to match itself, and
+   there is no compatibility to keep with VStim. All five copies now agree.
 6. **§3C shape 1 or 2** — does vstimd learn `trial_id`, or stay trial-blind?
 
 ## 10. Order of work
 
 | | | Blocked on |
 |---|---|---|
-| 1 | ~~settle §9.5~~ **done** (the typo wins); `outcomes.json` + `generate.py` still worth doing for the other three copies | — |
+| 1 | ~~settle §9.5~~ **done** (`UNEXPECTED_`); `outcomes.json` + `generate.py` still worth doing for the other three copies | — |
 | 2 | ~~`trial_id` on triald's `OutcomeReport`~~ **done** | — |
 | 3 | ~~The OpenAPI conformance test in statemachined (§7)~~ **done** | — |
 | 4 | ~~**Stage 1 e2e**~~ **done** | — |
