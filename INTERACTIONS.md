@@ -1,8 +1,10 @@
 # The braemons daemon interactions
 
-> **Status: plan, and an argument.** Nothing in §6–§9 is built. §3 is a
-> catalogue of what exists today, with the gaps marked — it is meant to be
-> checked against the code, not trusted.
+> **Status: plan, and an argument.** §6 is not built. §8's stage 1 is, and so
+> are §5.1, §5.2 and the §7 conformance test — `make test-e2e` in statemachined
+> runs one whole trial across both daemons. §3 is a catalogue of what exists
+> today, with the gaps marked — it is meant to be checked against the code, not
+> trusted.
 >
 > **Why this file exists.** vstimd's `proto/vstimd/v1/` can be read start to
 > finish and it tells you the whole client-facing surface. Nothing plays that
@@ -101,9 +103,9 @@ GET  /api/trial/result                 → the last completed trial
 graph, timings and a reward duration; it cannot tell a go trial from a catch
 trial. That omission is what keeps firmware stable while paradigms change.
 
-**triald can name a graph** (settled, §9.2, built). `TrialType.graph` is a
-name, carried through `TrialSpec` into the record and out through
-`TrialParameters.graph`. It replaced `TrialType.time_sequence`, a bare index
+**triald can name a graph** (settled, §9.2, built). `TrialType.statemachine_graph`
+is a name, carried through `TrialSpec` into the record and out through
+`TrialParameters.statemachine_graph`. It replaced `TrialType.time_sequence`, a bare index
 triald never read: an index points at a different machine the moment the
 executor's store is edited, which is the disease sets were cured of in VStim
 #239. Empty means "leave whatever is loaded".
@@ -113,6 +115,12 @@ owns the store and refuses a name it does not have — a configuration error
 triald can report, rather than a trial that quietly ran the wrong machine. Where
 statemachined keeps the store is its own business, and the name never reaches
 the firmware as a name: the daemon resolves it.
+
+**The field is spelled differently on each side, deliberately.** triald calls it
+`statemachine_graph`, because in triald's vocabulary a bare "graph" says nothing
+about whose it is and triald holds none of its own. statemachined calls it
+`graph`, because its namespace supplies the rest. A client maps the one field;
+renaming either would break a working API to buy symmetry nobody reads.
 
 **Still missing: triald's outbound client.** Nothing in triald posts to
 `/api/trial/configure` yet; `TrialParameters` is handed to a `BehaviourSource`,
@@ -198,12 +206,12 @@ Not interactions in the sense above — no request, no reply, no schema to revie
 | Step | Where | |
 |---|---|---|
 | triald picks a trial | `session.next_trial()`, `POST /api/trial/next` | ✅ |
-| triald names the graph for it | `TrialType.graph` → `TrialSpec` → `TrialParameters` | ✅ |
+| triald names the graph for it | `TrialType.statemachine_graph` → `TrialSpec` → `TrialParameters` | ✅ |
 | triald configures statemachined | — | ❌ no client in triald |
 | statemachined arms the device | `POST /api/trial/configure` | ✅ |
 | start · cancel · result | `api/trial_routes.py` | ✅ |
 | device runs the trial | firmware, `device_supervisor`, native build on a socket | ✅ |
-| statemachined reports back | `triald_client.py` | ⚠️ §5.1 |
+| statemachined reports back | `triald_client.py` | ✅ §5.1 fixed |
 | triald counts, accepts, records | `session.report_outcome()`, `recording.py` | ✅ |
 | triald configures vstimd | — | ❌ neither side |
 | triald asks vstimd for frame loss | — | ❌ neither side, §3C |
@@ -211,7 +219,11 @@ Not interactions in the sense above — no request, no reply, no schema to revie
 
 ## 5. Three defects, all in interaction B
 
-### 5.1 `trial_id` — a 422 on every trial
+**5.1 and 5.2 are fixed.** Kept in full because the fix is only half the
+value — the other half is why neither was visible, which is what §7 and §8 are
+for. Marked ✅ where they were closed.
+
+### 5.1 `trial_id` — a 422 on every trial ✅ **fixed**
 
 `triald_client.py` sends `trial_id`. triald's `OutcomeReportModel`
 (`api/schemas.py:325`) has no such field and its base `Model` is
@@ -226,16 +238,25 @@ correctness story… what stops a late outcome being attributed to the trial aft
 it, which is how a rig quietly mislabels a dataset"* — a guard that exists only
 on the simulated pull path.
 
-**Fix: add `trial_id: int` to triald's `OutcomeReport`, required, and refuse a
-report whose id is not the trial in flight.** Update `dev/API.md` in the same
-change.
+**Fixed** in triald (`graph-by-name`): `trial_id` is required on
+`OutcomeReportModel`, checked against the trial in flight, and refused with 409
+if it is any other one — never accepted, because triald cannot tell which of two
+reports is the truth. It addresses the message and is deliberately *not* on
+`OutcomeReport` itself or in the record, which already carries the trial's
+number; two copies could disagree. `Session.report_outcome` takes it as an
+optional keyword, since in-process callers hold the spec they are answering and
+cannot be late. `dev/API.md` and the web UI updated in the same change.
 
 **Why nobody noticed** is the argument for §8 in one file:
-`tests/unit/test_triald_client.py:70` asserts `sent["trial_id"] == 193` against
+`tests/unit/test_triald_client.py:70` asserted `sent["trial_id"] == 193` against
 an `httpx.MockTransport` that returns 200 for anything. The mock is the far end,
-so the test validates statemachined's *belief* about triald's schema.
+so the test validated statemachined's *belief* about triald's schema. **A mock
+at the far end of a contract tests one side's opinion of the contract twice.**
+That test still exists and is still a mock — it is the right tool for "what does
+this daemon decide to send" — but it now says so, and what the far end accepts is
+the e2e suite's job.
 
-### 5.2 The outcome taxonomy has drifted
+### 5.2 The outcome taxonomy has drifted ✅ **fixed**
 
 Code 8 is spelled two ways across five copies:
 
@@ -254,11 +275,18 @@ unparseable at the far end; and graphs name outcomes by string —
 keyed by name — so a graph authored from triald's vocabulary is refused at
 compile, by a person with both spellings in front of them in two web UIs.
 
-**Fix: pick one, then §6 so it cannot happen again.** `trial.h:19` claims to
-mirror VStim's `TDR.h`, and it and triald agree on `Inexpected`, so the typo is
-almost certainly original. **Proposal: the typo wins** — it is a wire contract
-with years of `.tdr` files behind it, and statemachined's daemon and its panel
-change. Confirm against `VStimLib/TDR.h`.
+**Confirmed and fixed: the typo wins.** `VStimLib/TDR.h:33` declares
+`InexpectedStartSignal`, and `GetTrialOutcomeString` returns that literal —
+so the misspelling is written into every `.tdr` the lab has and is the wire
+contract, not a mistake a copy may quietly correct. statemachined's daemon
+(`model/trial_outcome.py`) and its graph store panel now spell it
+`INEXPECTED_START_SIGNAL`, and all five copies agree.
+
+An assertion holds them there:
+`daemon/tests/unit/test_the_outcome_report_matches_trialds_schema.py` compares
+statemachined's `TrialOutcome` to triald's, name and value, so the next drift is
+a failing test rather than a graph nobody can compile. §6 would still be better —
+this only covers two of the five copies.
 
 ### 5.3 `reaction_time_ms` int vs float
 
@@ -361,20 +389,41 @@ behind `bench/native_device_on_a_socket.py`, and
 triald is a pip-installable FastAPI app, so it mounts **in-process** via
 `httpx.ASGITransport` — no subprocess, no port, no fixture teardown race.
 
-### Stage 1 — one whole trial, two daemons *(needs only §5.1 and §5.2)*
+### Stage 1 — one whole trial, two daemons ✅ **built**
 
-`test_a_whole_trial_with_triald.py`: real triald ASGI app + native device on a
-socket + a graph from `statemachined/graphs/`.
+`daemon/tests/integration/test_a_whole_trial_with_triald.py`, eight tests, plus
+`daemon/tests/unit/test_the_outcome_report_matches_trialds_schema.py` for the
+schema half with no device. `make test-e2e`.
 
 1. arm a triald session, `POST /api/trial/next`
 2. `POST /api/trial/configure` on statemachined with that `trial_id` and a graph
-3. `POST /api/trial/start`, drive the device's input lines to a terminal state
+3. `POST /api/trial/start` — the graph reaches its outcome on a **timeout**, not
+   on a lever: the daemon sends commands and never drives the device's inputs,
+   so nothing in this process can press anything. Driving lines is
+   `tests/hardware/`, with jumper wires.
 4. assert the outcome reached triald with the right `trial_id`, the right
-   `.tdr` code, `simulated: false`, and the acceptance triald reports back
+   `.tdr` code, `simulated: false`, the veto fields left for whoever owns them,
+   and the acceptance triald reports back
 5. **the negative that matters:** a report for the wrong `trial_id` is refused
+   with 409 and the trial in flight is left untouched
+6. and the counterpart: a daemon with `triald_base_url: ""` still runs a trial
 
 Steps 2 and 4 go through the *push* path, which `runner.run_trial()` does not
 use — so this is also the first test of the loop a rig actually runs.
+
+**How triald gets there.** Not `httpx.ASGITransport` as first planned — that is
+async-only and this call is synchronous. Starlette's `TestClient` *is* an
+`httpx.Client` over an ASGI app, so `TrialdClient` takes the client that carries
+the request and the test hands it one. Same in-process mount, no subprocess, no
+port, no teardown race, public API only.
+
+**The dependency is its own group** (`e2e`), not part of `test`: triald is a
+private repo, and `make test-daemon` on a fresh checkout must not fail for want
+of credentials to another repo. Without it both files skip themselves and say
+why. CI runs `make test-e2e` as a separate job gated on a deploy key.
+
+**A probe that it is not vacuous:** renaming `trial_id` in `triald_client.py`
+fails 7 of the 8 — which is exactly §5.1 reproduced.
 
 ### Stage 2 — triald initiates
 
@@ -401,8 +450,8 @@ starts to earn itself**, and not before.
    executor's store. triald has no opinion about where one sits in that store
    and never validates the name — an index would be a second, silent identity
    for the same thing, and triald owning graph bodies would make it the hub the
-   family is built to avoid. Built in triald (`TrialType.graph`, replacing
-   `time_sequence`). What remains of item 5 is the outbound client.
+   family is built to avoid. Built in triald (`TrialType.statemachine_graph`,
+   replacing `time_sequence`). What remains of item 5 is the outbound client.
 3. **`start_source`.** `configure` takes `"serial"` or `"ttl"`. On a rig it
    should be `ttl` so reaction times need no clock sync; `serial` is the
    desk-testing path. Confirm the default per deployment, and whether triald
@@ -411,22 +460,34 @@ starts to earn itself**, and not before.
    `configure → ready → start` across every registered participant. With two
    participants and one of them trial-blind, is the gate worth building now, or
    is "configure returned 200" the readiness answer until there is a third?
-5. **Which spelling of code 8 wins** (§5.2). Check `VStimLib/TDR.h`.
+5. ~~**Which spelling of code 8 wins**~~ **Settled: `Inexpected`, the typo.**
+   `VStimLib/TDR.h:33` and `GetTrialOutcomeString` put that literal in every
+   `.tdr`. All five copies now agree.
 6. **§3C shape 1 or 2** — does vstimd learn `trial_id`, or stay trial-blind?
 
 ## 10. Order of work
 
 | | | Blocked on |
 |---|---|---|
-| 1 | `outcomes.json` + `generate.py`; settle §9.5; regenerate all five copies | §9.5 |
-| 2 | `trial_id` on triald's `OutcomeReport`, required, and refused when it is not the trial in flight | — |
-| 3 | The OpenAPI conformance test in statemachined (§7) | 2 |
-| 4 | **Stage 1 e2e** | 1, 2 |
+| 1 | ~~settle §9.5~~ **done** (the typo wins); `outcomes.json` + `generate.py` still worth doing for the other three copies | — |
+| 2 | ~~`trial_id` on triald's `OutcomeReport`~~ **done** | — |
+| 3 | ~~The OpenAPI conformance test in statemachined (§7)~~ **done** | — |
+| 4 | ~~**Stage 1 e2e**~~ **done** | — |
 | 5 | ~~Answer §9.2; a `graph` on the trial type~~ **done**; triald's outbound client | — |
 | 6 | **Stage 2 e2e** — triald initiates | 5 |
 | 7 | `mdns.md`; `rig=` in both daemons; vstimd's TXT records and web port | — |
 | 8 | §3C: the vstimd message, and per-trial or windowed frame-loss accounting | §9.6 |
 | 9 | **Stage 3 e2e**, and decide whether `rig-integration` exists | 8 |
 
-Items 2, 3, 7 are independent and small. Item 1 is the one that stops a class of
-bug rather than a bug. Item 5 is the one with a design decision inside it.
+**Next is item 5's remainder: triald's outbound client.** Everything it needs
+now exists — trial types name a graph, statemachined's `configure` route takes
+one, and the e2e harness already drives both daemons in one process, so stage 2
+is a rewrite of `run_one_trial` rather than new infrastructure. The open
+question is where the client hangs: a `BehaviourSource` implementation would
+reuse `runner.run_trial`, but that interface is a *pull* (`arm` then
+`result(trial_id)`) and the outcome is a push, so it fits badly. §9.1.
+
+Item 7 is independent and small. Item 1's remainder — `outcomes.json` and
+`generate.py` — is the one that stops a class of bug rather than a bug; the
+conformance test now covers two of the five copies of the taxonomy, and the
+firmware header and triald's `app.js` are still hand-kept.
