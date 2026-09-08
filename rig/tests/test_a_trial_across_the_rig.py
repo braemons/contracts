@@ -162,7 +162,8 @@ def test_a_trial_runs_on_one_daemon_and_is_bounded_by_frames_from_another(displa
 
     observer = StimulusObserver(connect("127.0.0.1", display["event_port"]))
     observer.start()
-    executor = StateMachineExecutor(base_url="http://rig.test", client=armed_executor)
+    # The real client: httpx against a real server, which is how it ships.
+    executor = StateMachineExecutor(base_url=armed_executor.base_url)
 
     try:
         with Connection(display["address"], recv_timeout_s=10.0) as renderer:
@@ -180,8 +181,8 @@ def test_a_trial_runs_on_one_daemon_and_is_bounded_by_frames_from_another(displa
 
             # Observed, not waited on: the executor published and moved on, and
             # this side is the one holding a deadline. Same shape as stage 2.
-            with armed_executor.websocket_connect("/api/trace/stream?observer=triald") as stream:
-                finished = next(executor.finished_trials(iter(lambda: stream.receive_text(), None)))
+            with armed_executor.trace_stream() as messages:
+                finished = next(executor.finished_trials(messages))
             assert finished == 1
             outcome = executor.outcome_of(trial_id=1)
 
@@ -224,14 +225,15 @@ def test_the_observer_survives_a_trial_it_was_not_watching(display, armed_execut
 
     observer = StimulusObserver(connect("127.0.0.1", display["event_port"]))
     observer.start()
-    executor = StateMachineExecutor(base_url="http://rig.test", client=armed_executor)
+    # The real client: httpx against a real server, which is how it ships.
+    executor = StateMachineExecutor(base_url=armed_executor.base_url)
     try:
         executor.configure(
             TrialConfiguration(trial_id=7, statemachine_graph="show", cap_milliseconds=5000)
         )
         executor.start(7)
-        with armed_executor.websocket_connect("/api/trace/stream?observer=triald") as stream:
-            assert next(executor.finished_trials(iter(lambda: stream.receive_text(), None))) == 7
+        with armed_executor.trace_stream() as messages:
+            assert next(executor.finished_trials(messages)) == 7
         # No window was ever opened, and nothing anywhere minded.
         assert observer.close_window(last_frame=1) is None
     finally:

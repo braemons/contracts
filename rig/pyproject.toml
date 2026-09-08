@@ -13,7 +13,10 @@ dependencies = []
 # are installed is the question this repo asks. `make test` puts in the pinned
 # releases from rig_versions.toml; `make test-local` puts in local checkouts.
 # Declaring them here would make one of those the default and hide the other.
-dev = ["pytest>=8.3", "ruff>=0.8", "fastapi>=0.115", "httpx>=0.28"]
+# httpx to talk to the daemons, websockets for the trace stream. No fastapi:
+# nothing here builds an application any more — the daemons are processes, the
+# way they are on a rig.
+dev = ["pytest>=8.3", "ruff>=0.8", "httpx>=0.28", "websockets>=13"]
 
 [tool.ruff]
 line-length = 100

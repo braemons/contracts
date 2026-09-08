@@ -72,8 +72,25 @@ Step 2 is scaffolding, not the design. What each repo owes, to close it:
 
 * **vstimd** — release 0.2; the pipeline already publishes binaries.
 * **statemachined** — publish the native device (`firmware/native/`) as a release
-  asset. It is already built for its own tests; nothing else needs writing.
-* **triald** — a release workflow. It has none.
+  asset. It already ships `.deb`, `.rpm` and the board firmware; the host-built
+  device is the one piece its own tests need that nobody outside the repo can
+  get. (Its bench bridge may already be in the package — check before assuming.)
+* **triald** — a release workflow. It has none, and it is the only one of the
+  three with no release path at all.
+
+### Nothing here imports a daemon
+
+Except the two libraries an experiment script imports: `triald` and
+`vstimd-client`. The daemons themselves are **processes on ports**, started the
+way their service units start them and talked to over HTTP and ZeroMQ.
+
+That was not true at first. The executor fixture built statemachined in-process
+with Starlette's `TestClient`, which is exactly how statemachined's own suite
+tests it — correctly, because there the daemon is the subject. Here it is not:
+what is under test is a rig, and on a rig this daemon is a service on port 8081
+that nothing imports. Reaching into it as a library exercises a path no operator
+has, and it also quietly avoided the real client: `StateMachineExecutor` now runs
+over httpx and a real WebSocket, the way it ships.
 
 ## Running it
 

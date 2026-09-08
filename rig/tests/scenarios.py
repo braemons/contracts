@@ -142,10 +142,10 @@ def run_one_trial(
     # Observed, not waited on: the executor published and moved on, and this side
     # is the one holding a deadline. Subscribing is opening the stream; nothing
     # on the far end is holding the trial for anybody.
-    with executor_client.websocket_connect("/api/trace/stream?observer=triald") as stream:
+    with executor_client.trace_stream() as messages:
         if while_running is not None:
             while_running()
-        finished = next(executor.finished_trials(iter(lambda: stream.receive_text(), None)))
+        finished = next(executor.finished_trials(messages))
     assert finished == trial_id
 
     outcome = executor.outcome_of(trial_id=trial_id)

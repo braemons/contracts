@@ -29,6 +29,7 @@ worse than no suite, because it would be green.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import pathlib
 import shutil
@@ -337,35 +338,6 @@ def statemachined_bench(statemachined_device: pathlib.Path):
     )
 
 
-def _daemon_configuration(device_target: str, tmp_path):
-    """One rig config, whatever is on the other end of `device_target`.
-
-    Shared between the two executor fixtures on purpose: a board and a
-    host-compiled device must be given *the same* daemon, or a difference in
-    behaviour between them is a difference between two configurations and proves
-    nothing about the hardware.
-    """
-    import json
-
-    from statemachined.rig_configuration import RigConfiguration
-
-    configs = tmp_path / "configs"
-    configs.mkdir(parents=True, exist_ok=True)
-    (configs / "bench.config.json").write_text(
-        json.dumps({"name": "bench", "line_map": LINE_MAP, "graphs": []}, indent=2) + "\n"
-    )
-    return RigConfiguration(
-        device_target=device_target,
-        device_timeout_seconds=5.0,
-        graph_store_directory=tmp_path / "graphs",
-        state_machine_config_directory=configs,
-        trace_directory=tmp_path / "trace",
-        recording_directory=tmp_path / "recordings",
-        heartbeat_seconds=0.5,
-        startup_state_machine_config="bench",
-    )
-
-
 #: The rig these tests assume, as a state-machine config.
 #:
 #: **This is the wiring, written down.** `WIRING.md` says which physical pin each
@@ -385,37 +357,184 @@ LINE_MAP = {
 }
 
 
+class Executor:
+    """A statemachined on a port, talked to the way anything else would.
+
+    **Not an imported application.** An earlier version of this file built the
+    daemon in-process with Starlette's `TestClient`, which is how statemachined's
+    own suite tests statemachined — correctly, because there the daemon is the
+    subject. Here it is not: what is under test is a rig, and on a rig this
+    daemon is a service on port 8081 that nothing imports. A test that reached
+    into it as a library would be exercising a path no operator has.
+
+    So: a real process, real HTTP, and a real WebSocket for the trace. Which also
+    means `StateMachineExecutor` is used the way it ships, over httpx, rather
+    than with a test client injected into it.
+    """
+
+    def __init__(self, base_url: str, client) -> None:
+        self.base_url = base_url
+        self._client = client
+
+    def get(self, path: str, **kw):
+        return self._client.get(path, **kw)
+
+    def post(self, path: str, **kw):
+        return self._client.post(path, **kw)
+
+    def put(self, path: str, **kw):
+        return self._client.put(path, **kw)
+
+    @contextlib.contextmanager
+    def trace_stream(self, observer: str = "triald"):
+        """The executor's published trace, as an iterator of messages.
+
+        Opening this is the whole of subscribing and closing it is the whole of
+        leaving: nothing on the far end holds a trial for a subscriber, and
+        `?observer=` is a label on its diagnostics page that grants nothing.
+        """
+        from websockets.sync.client import connect
+
+        scheme = "wss" if self.base_url.startswith("https") else "ws"
+        rest = self.base_url.split("://", 1)[-1]
+        with connect(f"{scheme}://{rest}/api/trace/stream?observer={observer}") as socket:
+            yield iter(lambda: socket.recv(), None)
+
+
+def _rig_config(device_target: str, tmp_path: pathlib.Path) -> pathlib.Path:
+    """The TOML an operator edits, written for this run.
+
+    The same file `/etc/braemons/statemachined-rig-config.toml` is, pointed at a
+    temporary state directory so a test run leaves nothing behind and cannot pick
+    up a previous one's graphs.
+    """
+    import json
+
+    configs = tmp_path / "configs"
+    configs.mkdir(parents=True, exist_ok=True)
+    (configs / "bench.config.json").write_text(
+        json.dumps({"name": "bench", "line_map": LINE_MAP, "graphs": []}, indent=2) + "\n"
+    )
+    toml = tmp_path / "statemachined-rig-config.toml"
+    toml.write_text(
+        "\n".join(
+            [
+                f'device_target = "{device_target}"',
+                "device_timeout_seconds = 5.0",
+                f'graph_store_directory = "{tmp_path / "graphs"}"',
+                f'state_machine_config_directory = "{configs}"',
+                f'trace_directory = "{tmp_path / "trace"}"',
+                f'recording_directory = "{tmp_path / "recordings"}"',
+                "heartbeat_seconds = 0.5",
+                'startup_state_machine_config = "bench"',
+                "",
+            ]
+        )
+    )
+    return toml
+
+
 @pytest.fixture
 def executor(request: pytest.FixtureRequest, tmp_path):
-    """A statemachined in front of a device.
+    """A statemachined serving, in front of a device.
 
     On a rig, the board on `--target`. Locally, the same firmware compiled for
-    this host, on a socket. The daemon is identical either way — see
-    `_daemon_configuration` — so a test that passes locally and fails on the
-    bench has told you something about the device, which is the only reason to
-    own a bench.
+    this host, on a socket. The daemon is spawned identically either way, so a
+    test that passes locally and fails on the bench has told you something about
+    the device — which is the only reason to own a bench.
     """
-    from fastapi.testclient import TestClient
-    from statemachined.api.application import create_application
+    import httpx
 
-    if request.config.getoption("--hardware"):
-        target = request.config.getoption("--target")
-        configuration = _daemon_configuration(target, tmp_path)
-        with TestClient(create_application(configuration)) as client:
-            if client.get("/api/device").json().get("state") in (None, "absent"):
-                pytest.skip(f"no board answering on {target}")
-            yield client
-            _leave_the_device_idle(client, target)
-        return
+    on_hardware = request.config.getoption("--hardware")
+    if on_hardware:
+        device_target = request.config.getoption("--target")
+        device = None
+    else:
+        device = request.getfixturevalue("statemachined_bench").NativeDeviceOnASocket(
+            store_path=str(tmp_path / "store.bin")
+        )
+        device.start()
+        device_target = device.target_url
 
-    device = request.getfixturevalue("statemachined_bench").NativeDeviceOnASocket(
-        store_path=str(tmp_path / "store.bin")
+    port = distinct_ports(1)[0]
+    base_url = f"http://127.0.0.1:{port}"
+    log = tmp_path / "statemachined.log"
+    with log.open("w") as sink:
+        proc = subprocess.Popen(
+            [
+                _statemachined_command(),
+                "serve",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(port),
+                "--config",
+                str(_rig_config(device_target, tmp_path)),
+                # A test run must not advertise itself to the lab as a rig.
+                "--no-mdns",
+            ],
+            stdout=sink,
+            stderr=subprocess.STDOUT,
+        )
+        client = httpx.Client(base_url=base_url, timeout=10.0)
+
+        def answering() -> bool:
+            if proc.poll() is not None:
+                pytest.fail(f"statemachined exited at once:\n{log.read_text()}")
+            try:
+                return client.get("/api/health").status_code == 200
+            except Exception:
+                return False
+
+        if not wait_until(answering, timeout_s=30.0):
+            _stop(proc)
+            pytest.fail(f"statemachined never answered:\n{log.read_text()}")
+
+        if on_hardware and client.get("/api/device").json().get("state") in (None, "absent"):
+            _stop(proc)
+            pytest.skip(f"no board answering on {device_target}")
+
+        yield Executor(base_url, client)
+
+        if on_hardware:
+            _leave_the_device_idle(client, device_target)
+        client.close()
+        _stop(proc)
+    if device is not None:
+        device.stop()
+
+
+def _stop(proc: subprocess.Popen) -> None:
+    """SIGTERM, then insist.
+
+    A daemon holding a serial link does not always unwind on the first signal,
+    and a test run that hung in teardown would be indistinguishable from one that
+    hung in a test. The suite's job is to leave nothing behind, not to be polite
+    about it.
+    """
+    proc.terminate()
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=5)
+
+
+def _statemachined_command() -> str:
+    """The daemon's entry point, as installed.
+
+    `shutil.which` rather than `sys.executable -m`: the package declares a
+    console script and that is what the service unit runs, so it is what should
+    be exercised. A `.deb` puts it at /opt/braemons/statemachined/bin.
+    """
+    for candidate in ("statemachined", "/opt/braemons/statemachined/bin/statemachined"):
+        found = shutil.which(candidate) or (candidate if pathlib.Path(candidate).exists() else None)
+        if found:
+            return found
+    pytest.skip(
+        "no statemachined on PATH: install it (`pip install statemachined`, or the "
+        ".deb) — see rig/README.md, 'The bootstrap gap'"
     )
-    device.start()
-    configuration = _daemon_configuration(device.target_url, tmp_path)
-    with TestClient(create_application(configuration)) as client:
-        yield client
-    device.stop()
 
 
 def _leave_the_device_idle(client, target: str) -> None:
