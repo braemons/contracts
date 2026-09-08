@@ -49,41 +49,42 @@ about the thing installed on a rig.
 deliberate act of saying these three versions work together, which is the only
 claim this repo makes.
 
-### The bootstrap gap, honestly
+### The bootstrap gap, closed
 
-**Two of the three now ship what that needs; none of it is released yet.** As of
-now:
+This section used to explain why none of the three shipped what these tests
+need. All of them do now, and `make test` is green on nothing but published
+artifacts:
 
-| | released? | what is missing |
+| | release | what it publishes for this suite |
 |---|---|---|
-| vstimd | v0.1.0 | 0.2 is tagged-but-unpushed, and 0.1 has no event stream at all |
-| statemachined | v0.1.0-alpha1 | the released `.deb` predates the shipped device; the code has it |
-| triald | — | packaging exists and is unreleased: no tag has been cut |
+| vstimd | `v0.2.0-alpha1` | the server `.deb`, and `vstimd-client 0.2.0a1` on PyPI — the first client with an event stream |
+| statemachined | `v0.2.0-alpha1` | the daemon `.deb`, carrying the firmware compiled for the host at `libexec/statemachined-device` |
+| triald | `v0.2.0-alpha1` | the daemon `.deb`, **and a wheel** — these tests import triald rather than run it |
 
-So every fixture here resolves in three steps, in order:
+Fixtures still resolve in three steps, and the order is the point:
 
 1. **The pinned release artifact** — the intended path, and the only one that
    tests what an operator installs.
-2. **An installed daemon, or an environment variable naming a local build** —
-   `VSTIMD_BINARY`, `STATEMACHINED_SRC`. For developing against an unreleased
-   change, and for getting this repo working at all today.
+2. **An installed daemon, or an environment variable naming a local build**
+   (`VSTIMD_BINARY`, `STATEMACHINED_SRC`). For developing against an unreleased
+   change.
 3. **Skip, naming exactly what was missing.** Never a silent pass.
 
-Step 2 is scaffolding, not the design. What each repo owes, to close it:
+Step 2 is for developing, not for CI. What `make test` runs never reaches it.
 
-* **vstimd** — release 0.2. The pipeline already publishes binaries; the tags are
-  prepared. This is the only one of the three where the *code* is not yet enough.
-* **statemachined** — ✅ **done, unreleased.** The package now carries the
-  firmware compiled for the host at
-  `/opt/braemons/statemachined/libexec/statemachined-device`, and
-  `statemachined device` puts it on a port. So an installed daemon has a device,
-  and the socket bridge is `statemachined.device.native_device_on_a_socket` —
-  an ordinary import rather than a path into somebody's checkout. Needs a tag.
-* **triald** — ✅ **done, unreleased.** `nfpm` config, packaging Makefile, pinned
-  builder image and `release.yml`, publishing `.deb`, `.rpm` **and a wheel**. The
-  wheel is the one that matters here: these tests import triald rather than
-  running it, and until it existed the only way to have it was a git URL. Needs
-  a tag.
+**What closing the gap cost, and what it found.** Two of the three needed real
+work rather than a tag: statemachined's package had no device in it, so a box
+that installed it had a daemon and nothing to point at; triald had a systemd
+unit and no way to build anything at all, and the unit it shipped passed
+`--config` a rig config for a flag that takes a session config JSON — a command
+line that could never have started the daemon, unnoticed because nothing had
+ever run it.
+
+Then the container found a third thing neither repo's CI could: statemachined
+ships `expected_board = "uno_r4_minima"` and the packaged device reports
+`native`, so the daemon refused it — correctly, since a line map addressing
+another board's pins is how a rig rewards the wrong animal. Saying which board
+is on the wire is an operator's step, and `container/entrypoint.sh` does it.
 
 ### Nothing here imports a daemon
 
