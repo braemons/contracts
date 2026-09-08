@@ -80,7 +80,7 @@ def main() -> int:
     ARTIFACTS.mkdir()
 
     ok = True
-    for name, entry in pins.items():
+    for entry in pins.values():
         repo = entry.get("repo")
         pattern = entry.get("asset")
         if not repo or not pattern:
