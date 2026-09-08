@@ -57,6 +57,18 @@ jobs:
         with:
           python-version: "3.12"
 
+      # Copied from vstimd's own ci.yml, and that is the point rather than an
+      # apology: building a daemon means knowing its system dependencies, which
+      # is knowledge that belongs to that repo. A second copy here is a second
+      # thing to keep in step, and it is only here because this job builds from
+      # source at all. Installing a release would need none of it — see
+      # rig/README.md, "The bootstrap gap".
+      - name: System libraries the renderer needs
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libinput-dev libudev-dev libdrm-dev libwayland-dev protobuf-compiler
+
       - name: Cache the Rust build
         uses: Swatinem/rust-cache@v2
         with:
@@ -74,9 +86,11 @@ jobs:
         working-directory: vstimd/client/python
         run: make proto
 
+      # `integration-device` is the target statemachined's own integration tests
+      # use, and it puts the binary where rig/tests/conftest.py expects it.
       - name: Build the native device
         working-directory: statemachined
-        run: make native-device || make build
+        run: make integration-device
 
       - name: Run the three-daemon tests
         run: make rig-local
