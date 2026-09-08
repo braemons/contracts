@@ -1,0 +1,25 @@
+[project]
+name = "rig-integration"
+description = "End-to-end tests across vstimd, statemachined and triald"
+requires-python = ">=3.12"
+# Never published, never installed anywhere. A sentinel, as in the daemons.
+version = "0.0.0"
+dependencies = []
+
+[dependency-groups]
+# Everything the tests need *except* the three daemons.
+#
+# The daemons are installed by the Makefile, not declared here, because how they
+# are installed is the question this repo asks. `make test` puts in the pinned
+# releases from rig_versions.toml; `make test-local` puts in local checkouts.
+# Declaring them here would make one of those the default and hide the other.
+dev = ["pytest>=8.3", "ruff>=0.8", "fastapi>=0.115", "httpx>=0.28"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

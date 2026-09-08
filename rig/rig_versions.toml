@@ -1,0 +1,25 @@
+# The one claim this repo makes: these three releases work together.
+#
+# Bumping a pin is a deliberate act. Nothing here floats to "latest" — a rig
+# integration suite that silently followed three moving targets would report
+# breakage without saying which of the three moved, which is the one thing it
+# exists to answer.
+
+[vstimd]
+# The renderer. Needs the compiled server binary, not only the Python client:
+# the tests drive a real one in null mode.
+version = "0.2.0"
+# The release asset to fetch, by the naming its release.yml already uses.
+asset = "vstimd-{version}-x86_64-unknown-linux-gnu.tar.gz"
+
+[statemachined]
+# The trial state machine. Needs the daemon (a Python package) and a device for
+# it to talk to. On a rig that device is an MCU; here it is the same firmware
+# built for the host that statemachined's own tests use.
+version = "0.1.0"
+asset = "statemachined-native-device-{version}-x86_64-linux"
+
+[triald]
+# The decision authority. A Python package and nothing else — it has no native
+# half, which is why it is the only one of the three that needs no binary.
+version = "0.1.0"
