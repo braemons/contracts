@@ -265,6 +265,7 @@ Not interactions in the sense above — no request, no reply, no schema to revie
 | device runs the trial | firmware, `device_supervisor`, native build on a socket | ✅ |
 | statemachined publishes the result | the trace, `WS /api/trace/stream` | ✅ |
 | triald subscribes and translates | `triald.executor`, `api/statemachine_executor.py` | ✅ |
+| …over statemachined's own client | `statemachined.client`, `statemachined/python/` | ✅ |
 | statemachined lists who is watching | `GET /api/observers`, Observers panel | ✅ |
 | triald counts, accepts, records | `session.report_outcome()`, `recording.py` | ✅ |
 | triald configures vstimd | — | ❌ neither side |
@@ -322,7 +323,7 @@ Code 8 is spelled two ways across five copies:
 | `statemachined/firmware/core/trial/trial.h:31` | `InexpectedStartSignal` |
 | `triald/src/triald/outcomes.py:53` | `INEXPECTED_START_SIGNAL` |
 | `triald/src/triald/web/app.js:106` | `INEXPECTED_START_SIGNAL` |
-| `statemachined/daemon/.../model/trial_outcome.py:36` | `UNEXPECTED_START_SIGNAL` |
+| `statemachined/python/.../model/trial_outcome.py:36` | `UNEXPECTED_START_SIGNAL` |
 | `statemachined/.../graph_store_panel_element.js:59` | `UNEXPECTED_START_SIGNAL` |
 
 The *values* agree, so nothing on the wire is wrong today. Two things break
@@ -346,7 +347,7 @@ statemachined's firmware header, its core test, its daemon and its graph
 panel.
 
 An assertion holds them there:
-`daemon/tests/unit/test_the_outcome_report_matches_trialds_schema.py` compares
+`python/tests/unit/test_the_outcome_report_matches_trialds_schema.py` compares
 statemachined's `TrialOutcome` to triald's, name and value, so the next drift is
 a failing test rather than a graph nobody can compile. §6 would still be better —
 this only covers two of the five copies.
@@ -390,8 +391,8 @@ strictly smaller thing than what §6 originally proposed.
 
 **Each repo vendors both files and tests its own copies against them**, offline,
 in its own CI: `triald/tests/contracts/` and
-`statemachined/daemon/tests/contracts/`. There is already precedent in the tree
-— `statemachined/daemon/tests/unit/wire_vectors.json` is vendored golden data
+`statemachined/python/tests/contracts/`. There is already precedent in the tree
+— `statemachined/python/tests/unit/wire_vectors.json` is vendored golden data
 doing the same job.
 
 **Nothing checks a repo's copy against this one automatically, on purpose.** A
@@ -457,9 +458,39 @@ not a design"* — and the transcription is where §5.1's bug is. So:
   and commit the output. Stronger, but it is a build step in repos with a
   no-build-step culture, and the test above catches the same class of bug.
 
+### And the same move in the other direction ✅ **done**
+
+The transcription ran both ways. triald's `api/statemachine_executor.py` held
+*its* copy of statemachined's paths, refusal shape and stream rules — a second
+description of that daemon's API, maintained in this family's other repository,
+right until the day it was not.
+
+It is now `statemachined.client`, which ships from the repository that owns the
+API — in the same distribution as the daemon, so the client and the API it
+describes come from one commit — is tested against that daemon in three suites,
+one of them starting `statemachined serve` as a subprocess, and is what triald
+depends on. What is left in triald is what is genuinely triald's:
+`statemachine_graph` → `graph`, and a refusal → `ExecutorError`.
+
+**triald depends on the distribution named `statemachined`, and that is not a
+dependency on the daemon.** The package is tiered: the base is the documents
+(`model/`) and the HTTP client, `[device]` adds a serial port, `[serve]` adds
+the daemon. triald takes the base — pydantic, httpx, websockets. §2's rule is
+untouched: the decision authority knows its participants, and they know nobody.
+
+The same restructure gave a bench script a second way in, `statemachined.device`,
+which drives a board with no daemon at all. It is deliberately *not* an
+interaction in this catalogue: nothing else is on the network when it runs, and
+that is what makes it a bench.
+
+Note the asymmetry, and that it is the right one. **statemachined ships a client
+and triald does not need to**, because the direction of the relationship is that
+statemachined publishes and commands nothing (§2). A `triald-client` would exist
+for a console, not for a daemon, and nothing in this catalogue calls triald.
+
 ## 8. End-to-end tests
 
-**Where: `statemachined/daemon/tests/integration/`.** The dependency points
+**Where: `statemachined/python/tests/integration/`.** The dependency points
 statemachined → triald, dev-only, from git — which matches the coupling that
 already exists and keeps triald standalone-testable. Not console (no domain
 logic), not a new repo yet (§8 stage 3).
@@ -473,8 +504,8 @@ triald is a pip-installable FastAPI app, so it mounts **in-process** via
 
 ### Stage 1 — one whole trial, two daemons ✅ **built**
 
-`daemon/tests/integration/test_a_whole_trial_with_triald.py`, eight tests, plus
-`daemon/tests/unit/test_the_outcome_report_matches_trialds_schema.py` for the
+`python/tests/integration/test_a_whole_trial_with_triald.py`, eight tests, plus
+`python/tests/unit/test_the_outcome_report_matches_trialds_schema.py` for the
 schema half with no device. `make test-e2e`.
 
 1. arm a triald session, `POST /api/trial/next`

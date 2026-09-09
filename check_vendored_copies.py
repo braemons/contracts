@@ -34,7 +34,7 @@ FAMILY = HERE.parent
 #: to keep — vstimd has no outcome table, and console has no domain logic.
 VENDORED = [
     FAMILY / "triald" / "tests" / "contracts",
-    FAMILY / "statemachined" / "daemon" / "tests" / "contracts",
+    FAMILY / "statemachined" / "python" / "tests" / "contracts",
 ]
 
 FILES = ["outcomes.json", "check_outcomes.py"]
