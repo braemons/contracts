@@ -10,9 +10,10 @@ Every other repo in the family is a thing that runs —
 [console](https://github.com/braemons/console) shows them on one screen. This
 one runs nothing. It holds the contract they meet at.
 
-> **Status: the shape is settled and most of it is built.** `make test-e2e` in
-> statemachined runs one whole trial across two daemons, with triald driving.
-> What is left is listed in [`INTERACTIONS.md`](INTERACTIONS.md) §10.
+> **Status: the shape is settled and most of it is built.** `make rig` runs one
+> whole trial across all three daemons, and `rig/tests/test_the_handover_to_triald.py`
+> runs one across two, with triald driving. What is left is listed in
+> [`INTERACTIONS.md`](INTERACTIONS.md) §10.
 
 ## Read this first
 

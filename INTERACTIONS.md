@@ -1,8 +1,8 @@
 # The braemons daemon interactions
 
 > **Status: the shape is settled and half of it is built.** §5.1, §5.2, §8's
-> stage 1 and §9.1 are done — `make test-e2e` in statemachined runs one whole
-> trial across both daemons, with triald driving. §6 is not built, and §3C
+> stage 1 and §9.1 are done — `make rig-local` here runs one whole trial across
+> both daemons, with triald driving. §6 is not built, and §3C
 > (vstimd) is now an open issue rather than a design here. §3 is a catalogue of
 > what exists today, with the gaps marked — it is meant to be checked against
 > the code, not trusted.
@@ -504,9 +504,10 @@ triald is a pip-installable FastAPI app, so it mounts **in-process** via
 
 ### Stage 1 — one whole trial, two daemons ✅ **built**
 
-`python/tests/integration/test_a_whole_trial_with_triald.py`, eight tests, plus
+[`rig/tests/test_the_handover_to_triald.py`](rig/tests/test_the_handover_to_triald.py),
+ten tests, plus statemachined's own
 `python/tests/unit/test_the_outcome_report_matches_trialds_schema.py` for the
-schema half with no device. `make test-e2e`.
+schema half with no device. `make rig-local`.
 
 1. arm a triald session, `POST /api/trial/next`
 2. `POST /api/trial/configure` on statemachined with that `trial_id` and a graph
@@ -530,10 +531,14 @@ async-only and this call is synchronous. Starlette's `TestClient` *is* an
 the request and the test hands it one. Same in-process mount, no subprocess, no
 port, no teardown race, public API only.
 
-**The dependency is its own group** (`e2e`), not part of `test`: triald is a
-private repo, and `make test-daemon` on a fresh checkout must not fail for want
-of credentials to another repo. Without it both files skip themselves and say
-why. CI runs `make test-e2e` as a separate job gated on a deploy key.
+**It used to live in statemachined**, and moving it here is the whole argument
+of `rig/README.md` reaching its last case. Testing the handover from inside one
+of the two daemons meant that daemon installing the other: a dependency group,
+a lockfile pin on triald's main branch, and a CI job fetching another repo. When
+triald began depending on `statemachined` for the client it had stopped
+hand-copying, the two pins closed a cycle uv cannot resolve — so the lock could
+not be refreshed, and the suite ran for weeks against a triald commit whose bugs
+were already fixed. A test about two daemons belongs to neither.
 
 **A probe that it is not vacuous:** renaming `trial_id` in `triald_client.py`
 fails 7 of the 8 — which is exactly §5.1 reproduced.
@@ -659,7 +664,7 @@ starts to earn itself**, and not before.
 | 3 | ~~The OpenAPI conformance test in statemachined (§7)~~ **done** | — |
 | 4 | ~~**Stage 1 e2e**~~ **done** | — |
 | 5 | ~~Answer §9.2; a `graph` on the trial type; triald's outbound client~~ **done** | — |
-| 6 | ~~**Stage 2 e2e** — triald initiates~~ **done** (10 tests, `make test-e2e`) | — |
+| 6 | ~~**Stage 2 e2e** — triald initiates~~ **done** (10 tests, [`rig/`](rig/README.md), moved here out of statemachined) | — |
 | 7 | `mdns.md`; `rig=` in both daemons; vstimd's TXT records and web port | — |
 | 8 | ~~§3C: vstimd's event stream; the client subscriber; triald's join~~ **done** — `triald.api.stimulus_subscriber` closes it | — |
 | 9 | ~~**Stage 3 e2e**, and decide whether `rig-integration` exists~~ **done** — it does not: it is [`rig/`](rig/README.md), here | — |

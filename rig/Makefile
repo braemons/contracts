@@ -31,7 +31,7 @@ test-local: ## against local checkouts (VSTIMD, STATEMACHINED, TRIALD)
 	uv sync --quiet --group dev
 	uv pip install --quiet \
 		-e $(TRIALD) \
-		-e $(STATEMACHINED)/daemon \
+		-e "$(STATEMACHINED)/python[serve]" \
 		-e $(VSTIMD)/client/python \
 		fastapi uvicorn pydantic httpx
 	VSTIMD_BINARY=$(abspath $(VSTIMD))/target/release/vstimd \

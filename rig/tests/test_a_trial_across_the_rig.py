@@ -1,10 +1,11 @@
 """One trial, across all three daemons, with nothing faked in the middle.
 
 **What only this can be wrong about.** Each daemon's own suite proves that
-daemon. statemachined's stage-2 test proves the handover between it and triald.
-What is left, and lives nowhere else, is whether *three* fit: whether the frame
-axis vstimd publishes is the same axis triald bounds a trial with, and whether a
-trial that a state machine ran can be joined to what a renderer saw while it ran.
+daemon, and `test_the_handover_to_triald.py` beside this one proves the handover
+between statemachined and triald. What is left, and lives nowhere else, is
+whether *three* fit: whether the frame axis vstimd publishes is the same axis
+triald bounds a trial with, and whether a trial that a state machine ran can be
+joined to what a renderer saw while it ran.
 
 **The direction is the point, and it is visible here.** vstimd is commanded and
 publishes; statemachined is commanded and publishes; neither has a client, a
@@ -346,7 +347,10 @@ def test_a_trial_nobody_reports_the_end_of_is_the_consumers_to_end(display, arme
     finally:
         # The device is still running the trial: this test ended triald's
         # interest in it, not the trial. Leave the rig idle for the next test.
-        armed_executor.post("/api/trial/cancel", json={"reason": "OTHER"})
+        # By id: the cancel route names the trial it ends and forbids any
+        # other field, so a body carrying only a reason is a 422 that leaves
+        # the trial running.
+        armed_executor.post("/api/trial/cancel", json={"trial_id": trial_id})
 
     assert record is not None, (
         f"triald never gave up on trial {trial_id}: a cap of "

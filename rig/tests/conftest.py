@@ -675,14 +675,39 @@ def _statemachined_command() -> str:
 def _leave_the_device_idle(client, target: str) -> None:
     """A board is one object shared by every test, unlike a fresh native device.
 
-    It refuses a graph upload while a trial is running, so one test that walks
-    away mid-trial fails the next several with an error about something else
-    entirely. Local runs get a new device per test and need none of this.
+    It refuses a graph upload while a trial is armed or running, so one test that
+    walks away mid-trial fails the next several with an error about something
+    else entirely. Local runs get a new device per test and need none of this.
+
+    **A cancel names the trial it is cancelling.** `POST /api/trial/cancel` takes
+    a `trial_id` and forbids anything else in the body, so the `{"reason": ...}`
+    this used to send was a 422 the daemon never acted on -- a teardown that had
+    never once returned a device to idle, invisible because nothing had yet run
+    after the one test that leaves a trial in flight. The id comes from the
+    daemon rather than from the caller: whatever is actually armed is what has
+    to be cancelled, and the test that armed it may be the one that failed.
     """
     try:
-        client.post("/api/trial/cancel", json={"reason": "test teardown"})
+        state = client.get("/api/state")
+        if state.status_code != 200:
+            return
+        frame = state.json()
+        # The daemon's own definition of busy — `running`, or a link state of 2,
+        # which is armed but not yet started.
+        client.post("/api/trial/cancel", json={"trial_id": frame.get("trial_id") or 0})
+        # Cancelling is a round trip to the device; the next test's upload is
+        # refused if it arrives first.
+        wait_until(lambda: not _is_busy(client), timeout_s=5.0)
     except Exception as error:  # the run must not end because teardown was untidy
         print(f"\ncould not return {target} to idle: {error}")
+
+
+def _is_busy(client) -> bool:
+    frame = client.get("/api/state")
+    if frame.status_code != 200:
+        return False
+    body = frame.json()
+    return bool(body.get("running") or body.get("link_state") == 2)
 
 
 # ── The operator ──────────────────────────────────────────────────────────────
