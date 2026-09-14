@@ -45,7 +45,7 @@ that number is what the executor is keyed by. Against a statemachined this suite
 spawned, whose trace begins empty, that is exactly the rig's arrangement. Against
 a long-lived one (`--executor`) those ids may already carry results from somebody
 else's session, and `outcome_of` would be answering about the wrong trial -- so
-these tests are for the spawned path, the way `make test` runs them.
+these tests always get a daemon of their own -- see the `executor` fixture.
 """
 
 from __future__ import annotations
@@ -54,29 +54,31 @@ import pytest
 import scenarios
 
 
-@pytest.fixture(autouse=True)
-def _needs_an_executor_of_its_own(request: pytest.FixtureRequest) -> None:
-    """These tests need a device nobody else is sharing. See the module docstring.
+@pytest.fixture
+def executor(request: pytest.FixtureRequest, tmp_path):
+    """A statemachined and a device of this test's own, even beside a shared one.
 
-    **Skipped against an attached daemon** (`--executor`), which is what the
-    container and a rig both are, for a reason that is not this file's to fix: a
-    trial that is armed and never started cannot be cancelled. The daemon answers
-    `unknown_trial` -- "no such trial is running" -- and the device stays armed,
-    with every later graph upload refused `busy` for the life of the process.
-    Two tests here arm and deliberately never start, because refusing to start is
-    the thing they are about, so they would leave a shared rig unusable.
+    **Never the attached daemon** (`--executor`), which is what the container
+    and a rig both are, for two reasons that are not this file's to fix:
 
-    Reproduced against the pinned `0.2.0-alpha1` *and* against statemachined's
-    main, so it is a defect rather than a stale pin -- cancelling a *running*
-    trial works and returns the device to idle; cancelling an armed one has no
-    path back. When statemachined can disarm, delete this and the file runs
-    everywhere.
+    * triald numbers its trials from 1 in every session, and the executor keys
+      its trace by that number for its whole life. Every test here arms a new
+      session, so against one daemon the second test's trial 1 already has a
+      result and `outcome_of` refuses it -- one trial ends once.
+    * a trial that is armed and never started cannot be cancelled (the daemon
+      answers `unknown_trial`, the device stays armed and refuses every later
+      upload `busy`), and refusing to start is what one test here is about.
+
+    This used to skip instead, which meant the whole file ran nowhere CI looks.
+    A device of its own is the packaged `statemachined device` in the container
+    and statemachined's in-process bridge from a checkout; either way it is the
+    firmware compiled for this host, which is all a handover test needs. On
+    `--hardware` it is still a native device: these tests are about the wire
+    format between two daemons, and a board is a thing they must not share.
     """
-    if request.config.getoption("--executor"):
-        pytest.skip(
-            "needs a device of its own: an armed trial cannot be cancelled, so "
-            "these would leave an attached rig busy. `make test-local` runs them"
-        )
+    from conftest import _spawned_executor
+
+    yield from _spawned_executor(request, tmp_path, native=True)
 
 
 @pytest.fixture

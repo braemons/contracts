@@ -67,23 +67,15 @@ PY
 # rig this is edited through the web UI or dropped in by hand; either way it is a
 # file in the store, and the daemon loads it by name at startup.
 install -d /var/lib/braemons/statemachined/configs
-cat > /var/lib/braemons/statemachined/configs/bench.config.json <<'JSON'
-{
-  "name": "bench",
-  "line_map": {
-    "input_lines": [
-      {"name": "start_switch", "line_index": 0},
-      {"name": "lever", "line_index": 4}
-    ],
-    "output_lines": [
-      {"name": "ready_lamp", "line_index": 0},
-      {"name": "reward_valve", "line_index": 3, "safe_level_is_high": true},
-      {"name": "stimulus_gate", "line_index": 1}
-    ]
-  },
-  "graphs": []
-}
-JSON
+python3 - <<'PY'
+import json, pathlib
+# tests/line_map.json is the one copy: conftest, this file and run_on_hardware.py read it.
+line_map = json.loads(pathlib.Path("/opt/e2e-tests/tests/line_map.json").read_text())
+config = {"name": "bench", "line_map": line_map, "graphs": []}
+pathlib.Path("/var/lib/braemons/statemachined/configs/bench.config.json").write_text(
+    json.dumps(config, indent=2) + "\n"
+)
+PY
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 
@@ -120,7 +112,7 @@ cleanup() {
 trap cleanup EXIT
 
 for _ in $(seq 30); do
-  if /opt/rig-tests/bin/python -c "
+  if /opt/e2e-tests/bin/python -c "
 import sys, httpx
 try:
     sys.exit(0 if httpx.get('http://127.0.0.1:8081/api/health', timeout=1).status_code == 200 else 1)
@@ -133,10 +125,10 @@ done
 log "the daemons, as installed"
 dpkg-query -W -f='${Package} ${Version}\n' \
   braemons-vstimd braemons-statemachined braemons-triald statemachined 2>/dev/null || true
-/opt/rig-tests/bin/pip list 2>/dev/null | grep -iE "vstimd|triald" || true
+/opt/e2e-tests/bin/pip list 2>/dev/null | grep -iE "vstimd|triald" || true
 
 log "tests"
-cd /opt/rig-tests
+cd /opt/e2e-tests
 exec ./bin/python -m pytest tests -v \
   --display tcp://127.0.0.1:5555 \
   --event-port 5556 \

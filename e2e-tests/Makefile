@@ -1,11 +1,11 @@
-.PHONY: help artifacts test accept lint clean
+.PHONY: help artifacts test test-local accept accept-docker accept-pi lint clean
 
 # Local checkouts, for the developer path only. `make test` uses none of them.
 VSTIMD        ?= ../../vstimd
 STATEMACHINED ?= ../../statemachined
 TRIALD        ?= ../../triald
 
-IMAGE ?= braemons-rig-tests
+IMAGE ?= braemons-e2e-tests
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -35,7 +35,7 @@ test-local: ## against local checkouts (VSTIMD, STATEMACHINED, TRIALD)
 		-e $(VSTIMD)/client/python \
 		fastapi uvicorn pydantic httpx
 	VSTIMD_BINARY=$(abspath $(VSTIMD))/target/release/vstimd \
-	STATEMACHINED_DEVICE=$(abspath $(STATEMACHINED))/build/statemachined_native_device \
+	STATEMACHINED_NATIVE_DEVICE=$(abspath $(STATEMACHINED))/build/statemachined_native_device \
 	uv run --group dev --no-sync pytest -v $(ARGS)
 
 # ── What an acceptance run does ───────────────────────────────────────────────
@@ -45,12 +45,23 @@ test-local: ## against local checkouts (VSTIMD, STATEMACHINED, TRIALD)
 # box. The daemons are already running there as services, so this attaches to
 # them exactly as the container attaches to its own — a rig is a container with
 # wires, and the fixtures do not know the difference.
-accept: ## the acceptance suite on a wired rig (see WIRING.md)
+#
+# The two libraries the tests import come from the same pins as the container's:
+# vstimd-client from PyPI, triald's wheel from its release.
+accept: artifacts ## the whole suite on a wired rig, with its daemons running (see WIRING.md)
 	uv sync --quiet --group dev
-	uv run --group dev pytest -v --hardware \
+	uv pip install --quiet "$$(grep '^vstimd-client' artifacts/requirements.txt)" artifacts/triald-*.whl
+	uv run --group dev --no-sync pytest -v --hardware \
 		--display $(or $(DISPLAY_ADDR),tcp://127.0.0.1:5555) \
 		--executor $(or $(EXECUTOR),http://127.0.0.1:8081) \
 		$(ARGS)
+
+# Interactive: both explain what they will do and ask first. See WIRING.md.
+accept-docker: ## real board on USB, daemons in Docker; installs nothing here
+	./run_on_hardware.py docker $(ARGS)
+
+accept-pi: ## a Raspberry Pi test system with the board attached (runs sudo)
+	sudo ./run_on_hardware.py pi $(ARGS)
 
 lint:
 	uv run --group dev ruff check .

@@ -9,7 +9,7 @@
 # exactly the failure nobody else in the family can see.
 #
 # Ubuntu because that is what the .debs target. The .rpm side wants its own
-# image and its own job; see rig/README.md.
+# image and its own job; see e2e-tests/README.md.
 FROM ubuntu:24.04
 
 # ca-certificates for PyPI; the rest is what the daemons' packages depend on.
@@ -43,13 +43,13 @@ RUN apt-get update -qq \
 # author would run.
 COPY artifacts/requirements.txt /tmp/requirements.txt
 COPY artifacts/*.whl /tmp/artifacts/
-RUN python3 -m venv /opt/rig-tests \
- && /opt/rig-tests/bin/pip install --quiet --no-cache-dir -r /tmp/requirements.txt \
+RUN python3 -m venv /opt/e2e-tests \
+ && /opt/e2e-tests/bin/pip install --quiet --no-cache-dir -r /tmp/requirements.txt \
  && rm -rf /tmp/artifacts
 
 # ── The tests ─────────────────────────────────────────────────────────────────
-COPY tests /opt/rig-tests/tests
-COPY container/entrypoint.sh /usr/local/bin/rig-entrypoint
-RUN chmod +x /usr/local/bin/rig-entrypoint
+COPY tests /opt/e2e-tests/tests
+COPY container/entrypoint.sh /usr/local/bin/e2e-entrypoint
+RUN chmod +x /usr/local/bin/e2e-entrypoint
 
-ENTRYPOINT ["/usr/local/bin/rig-entrypoint"]
+ENTRYPOINT ["/usr/local/bin/e2e-entrypoint"]

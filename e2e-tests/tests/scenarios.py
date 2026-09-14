@@ -60,11 +60,11 @@ def timed_graph(name: str, milliseconds: int = 60, outcome: str = "HIT") -> dict
 
 
 def graph_waiting_for_a_lever(name: str, timeout_ms: int = 3000) -> dict:
-    """HIT if the lever goes high in time, MISS if it never does.
+    """HIT if the lever goes high in time, LATE if it never does.
 
     **The graph that needs a wire**, and the one no local run can answer: the
     device sends commands and never drives its own inputs, so off a bench this
-    always takes the MISS branch. With a lever — or a jumper — on the input, the
+    always takes the LATE branch. With a lever — or a jumper — on the input, the
     HIT branch is reached through the real trigger path, which is the thing the
     whole hourglass rests on and which nothing else in the family tests.
 
@@ -83,15 +83,15 @@ def graph_waiting_for_a_lever(name: str, timeout_ms: int = 3000) -> dict:
                     {"line": "ready_lamp", "kind": "high"},
                     {"line": "stimulus_gate", "kind": "high"},
                 ],
-                "on": [{"line": "lever", "edge": "rising", "goto": "Hit"}],
+                "transitions": [{"when": {"all": ["lever"]}, "goto": "Hit"}],
                 "timeout": {"after": "limit", "goto": "Missed"},
             },
             {
                 "name": "Hit",
-                "on_entry": [{"line": "reward_valve", "kind": "pulse", "duration_ms": 40}],
+                "on_entry": [{"line": "reward_valve", "kind": "pulse", "pulse_ms": 40}],
                 "outcome": "HIT",
             },
-            {"name": "Missed", "outcome": "MISS"},
+            {"name": "Missed", "outcome": "LATE"},
         ],
     }
 
@@ -196,5 +196,5 @@ def line_levels(executor_client) -> dict[str, bool]:
     somebody actually wired.
     """
     body = executor_client.get("/api/device/lines").json()
-    lines = body.get("lines", body if isinstance(body, list) else [])
+    lines = body.get("input_lines", []) + body.get("output_lines", [])
     return {line["name"]: bool(line.get("is_high_now")) for line in lines}

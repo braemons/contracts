@@ -118,7 +118,7 @@ def main() -> int:
     if not ok:
         print(
             "\nSome pinned artifacts do not exist. This is the bootstrap gap, not "
-            "a bug here — see rig/README.md for what each repo still owes."
+            "a bug here — see e2e-tests/README.md for what each repo still owes."
         )
         return 1
     return 0

@@ -91,7 +91,7 @@ def test_an_output_reaches_an_input_through_a_wire(executor, trial_executor, ren
     Needs `ready_lamp` jumpered to `lever` (WIRING.md, "loopback"). Entering
     `Wait` raises the lamp; if the wire is there the device sees a rising edge on
     the lever and takes the HIT branch. Without the wire the same graph times out
-    into MISS — which is what it does on every machine in CI, and why this cannot
+    into LATE — which is what it does on every machine in CI, and why this cannot
     be tested there.
 
     The graph triggers itself, which is the point: nothing on the host is in the

@@ -1,8 +1,8 @@
-.PHONY: help vendored rig rig-local
+.PHONY: help vendored e2e e2e-local
 
 # Two halves, and they cost very different amounts to run. `check` is a few
 # regexes over some source files and finishes before you let go of the key;
-# `rig` builds a Rust renderer and a firmware image. Keeping them as separate
+# `e2e` builds a Rust renderer and a firmware image. Keeping them as separate
 # targets — and separate CI jobs with path filters — is what stops the cheap one
 # from inheriting the slow one's runtime.
 
@@ -21,8 +21,8 @@ help:
 vendored: ## are the vendored copies still this one? (ARGS=--fix syncs them)
 	python3 check_vendored_copies.py $(ARGS)
 
-rig: ## the three-daemon tests, against pinned releases
-	$(MAKE) -C rig test ARGS="$(ARGS)"
+e2e: ## the three-daemon tests, against pinned releases
+	$(MAKE) -C e2e-tests test ARGS="$(ARGS)"
 
-rig-local: ## the same, against local checkouts
-	$(MAKE) -C rig test-local ARGS="$(ARGS)"
+e2e-local: ## the same, against local checkouts
+	$(MAKE) -C e2e-tests test-local ARGS="$(ARGS)"

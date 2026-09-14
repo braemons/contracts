@@ -19,6 +19,10 @@ version = "0.2.0.alpha1"
 # The server. `braemons-` is the archive's prefix; nothing inside the package
 # carries it.
 asset = "braemons-vstimd_{version}-1_amd64.deb"
+# The GPIO bridge from the same release. Only a rig with header pins needs it --
+# run_on_hardware.py installs it on a Raspberry Pi, where it carries the state
+# machine's TTL into vstimd's virtual trigger lines. The container has no GPIO.
+gpiochip_daqd_asset = "braemons-gpiochip-daqd_{version}-1_amd64.deb"
 # The client, from PyPI, because that is where a script's author gets it. A
 # third spelling of the same tag -- PEP 440 normalises `0.2.0alpha1` to
 # `0.2.0a1` -- and the reason this release exists: 0.1's client has no

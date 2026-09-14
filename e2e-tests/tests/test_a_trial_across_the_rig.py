@@ -447,6 +447,39 @@ def test_a_restart_reaches_the_observer_through_the_stream_it_really_subscribes_
     )
 
 
+def test_the_graph_the_acceptance_suite_needs_a_wire_for_uploads_and_runs(
+    display, executor, on_hardware
+):
+    """The acceptance suite's lever graph, uploaded and run where there is no lever.
+
+    Those tests only run on a wired rig, so nothing else ever sent this graph to
+    a daemon -- and it had rotted: it declared a `MISS` outcome the executor
+    does not have, and a transition and a pulse in a schema the executor had
+    stopped accepting. The first acceptance run would have failed on the upload
+    and blamed the wiring. Here it goes through the same upload and the same
+    trial, and with nothing on the input it must take the timeout branch.
+    """
+    from triald.api.statemachine_executor import StateMachineExecutor
+    from triald.api.stimulus_subscriber import StimulusObserver, connect
+    from vstimd import Connection
+
+    scenarios.upload(executor, scenarios.graph_waiting_for_a_lever("lever", timeout_ms=200))
+    observer = StimulusObserver(connect("127.0.0.1", display["event_port"]))
+    observer.start()
+    try:
+        with Connection(display["address"], recv_timeout_s=10.0) as renderer:
+            ran = scenarios.run_one_trial(
+                display_connection=renderer,
+                executor_client=executor,
+                executor=StateMachineExecutor(base_url=executor.base_url),
+                observer=observer,
+                graph="lever",
+            )
+    finally:
+        observer.close()
+    assert ran.outcome.outcome.name == ("HIT" if on_hardware else "LATE"), ran.outcome
+
+
 def _finished_results_for(executor_client, trial_id: int) -> int:
     """How many finished results the executor holds for one trial id.
 

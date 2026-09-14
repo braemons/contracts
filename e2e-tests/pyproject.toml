@@ -1,5 +1,5 @@
 [project]
-name = "rig-integration"
+name = "braemons-e2e-tests"
 description = "End-to-end tests across vstimd, statemachined and triald"
 requires-python = ">=3.12"
 # Never published, never installed anywhere. A sentinel, as in the daemons.

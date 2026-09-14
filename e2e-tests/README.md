@@ -1,4 +1,4 @@
-# rig/ — the tests that belong to no daemon
+# e2e-tests/ — the tests that belong to no daemon
 
 The dynamic half of this repository. `INTERACTIONS.md` writes down what the
 daemons promise each other and `check_outcomes.py` proves each repo's sources
@@ -112,9 +112,9 @@ over httpx and a real WebSocket, the way it ships.
 ## Running it
 
 ```bash
-cd rig
+cd e2e-tests
 make test         # against pinned releases — what an operator installs
 make test-local   # against local checkouts (VSTIMD, STATEMACHINED, TRIALD)
 ```
 
-From the repository root, `make rig` does the same.
+From the repository root, `make e2e` does the same.
