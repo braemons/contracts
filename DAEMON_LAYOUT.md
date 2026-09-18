@@ -76,68 +76,62 @@ a behaviour gets written down:
 service Zones {
   // Resolve the patch against the calibration, compile, upload, and wait for
   // the board to answer `armed`. Refuses if the set does not fit.
-  rpc Arm(ArmRequest) returns (ArmedZones) {
-    option (braemons.v1.route) = { method: "POST", path: "/api/zones/arm", body: "*" };
-  }
+  rpc Arm(ArmRequest) returns (ArmedZones);
 }
 ```
+
+Reached at `POST /mousewheeld.v1.Zones/Arm`, which gRPC decides and nobody
+writes down.
 
 Without the service block a `.proto` is a bag of structs and the *behaviour* —
 what you may ask for, in what order, and what comes back — lives in six handler
 files again. The rpc is the part that makes the file readable as an API.
 
-### It is an IDL, not a transport
+### It is an IDL **and**, on a control plane, the transport
 
-**No gRPC.** `INTERACTIONS.md` §7 settles this and the reasoning stands: the IDL
-is what earns its keep, and the RPC framework is what takes away `curl` and
-MATLAB's `webread`. `braemons.v1.route` binds each rpc to the HTTP route it
-actually rides, and that route is the only way to call it.
+**gRPC for control planes** — statemachined, triald and mousewheeld.
+`INTERACTIONS.md` §7 records how that answer changed and what it was measured
+against; the short version is that these daemons do not do CRUD, every objection
+to gRPC rested on a premise that has since moved, and the family had begun
+reimplementing gRPC one piece at a time.
 
-That option is ours, in `proto/braemons/v1/route.proto`, identical in every
-repository and vendored from here. It is deliberately not `google.api.http`,
-which exists to feed grpc-gateway and the googleapis OpenAPI generators —
-neither of which this family uses, so vendoring somebody else's schema to borrow
-their recognition would be paying for a tool we decided against. It also carries
-one thing theirs does not: `websocket: true`, which is how a stream gets
-declared at all. OpenAPI had no vocabulary for one, which is why three of this
-family's four streams were specified only in prose.
+**vstimd stays ZMQ**, because it is time-critical and its clients decode a
+high-rate stream. The fast bus — `vinput`, `vtl` — is shared memory and is not
+an RPC at all. The device wire stays NDJSON + CRC to the board.
+
+`braemons.v1.route` is therefore **gone**. An rpc's route is
+`/<package>.<Service>/<Method>`, decided by gRPC, and the generated service
+trait makes an unimplemented rpc a compile error — which is the job a route
+checker was doing by reading source code.
 
 vstimd has done exactly this since before it was a policy — `service.proto`'s
 service block is marked *"for future gRPC transport"* and is unused.
 
-### JSON is the wire, and proto owns it
+### The wire is binary, and the JSON mapping is gone
 
-Every HTTP and WebSocket byte in this family is JSON, because the console
-panels are served as written — no build step, no framework, no CDN — and a
-browser has no protobuf decoder without one of those. `curl` and MATLAB want the
-same thing.
+protobuf's own encoding, over HTTP/2. The whole table of JSON-mapping habits
+that used to live here — camelCase, `int64` as a string, enum prefixes, whether
+a field at its default is emitted — is **deleted**, because none of it happens
+any more. Those were five settings that differed per generator, so two clients
+built from one `.proto` could disagree about the same byte; each needed a test
+that printed the bytes to pin it. The binary encoding has no such freedom.
 
-So **protobuf's JSON mapping is the serialisation format** and the binary
-encoding goes unused. This is not a detail. It means the mapping's habits are
-what every panel and every `curl` sees, and they have to be handled rather than
-tolerated:
+`json_name` annotations stay in the `.proto` regardless. They cost nothing, and
+anything that does render one of these messages as JSON — a log line, a debug
+dump, a recorded trial — should spell `position_cm` rather than `positionCm`,
+because that is the family's rule that a quantity names its unit.
 
-| | what it does | what we do |
-|---|---|---|
-| camelCase | `position_cm` → `positionCm` | `json_name` on every field whose name is more than one word |
-| int64 | `41822` → `"41822"` | accepted; clients parse. A counts field that is not an integer misleads every reader of the proto |
-| enums | `DISPLACEMENT` or `ZONE_METRIC_DISPLACEMENT`, depending on the generator | **keep the prefix**, on both sides of every generator |
-| a field at its default | omitted entirely | **emit it**: a wheel at rest must not answer without a `position_cm` |
-| unknown fields | refused or ignored, depending on the generator | refuse them, which is §11's rule for a request and pbjson's default |
+**What is lost is `curl`.** That was the last objection standing and it was
+traded deliberately: every daemon ships a client library and a CLI, and those
+are the supported way in. A rig at three in the morning is reached with the
+daemon's own CLI rather than by hand-writing a request.
 
-The last three are settings, not laws, and the settings are per generator — which
-is the trap. `pbjson` strips an enum's prefix by default and Python's
-`json_format` does not, so two clients generated from one `.proto` disagree
-about the same byte. A daemon's generator options are part of its interface and
-belong in a test that prints the bytes, not in somebody's memory.
-
-mousewheeld's `daemon/tests/wire_json.rs` is that test: eight cases, every
-assertion written by printing the JSON first.
-
-If the daemon's own serde or pydantic types keep producing the bytes and the
-proto merely describes them, this whole arrangement is OpenAPI again with a
-different syntax. **The generated code must be what serialises**, or the file is
-an afterthought and will drift.
+**A browser reaches a daemon through gRPC-Web**, translated in process by
+`tonic-web` — no proxy, no second daemon, no second port. The panels get a
+generated client and therefore a build step, which is a change from the
+`/elements/` contract's original *no build step* and is allowed: that rule
+existed so a **console** would not need one, and a client the daemon serves
+still satisfies it.
 
 ### The three layers, and the rule
 
@@ -194,7 +188,7 @@ Same target names in all four repositories:
 | `make proto` | regenerate from `proto/`; the output is **committed** |
 | `make build` `make test` | |
 | `make check` | build + lint + test + `check-proto` + `check-text` |
-| `make check-proto` | the `.proto` compiles, the committed generated code is what it produces, and every served route has an rpc above it |
+| `make check-proto` | the `.proto` compiles and the committed generated code is what it produces |
 | `make dev` | against a simulator, elements served from disk |
 | `make docs` `make package` | |
 
@@ -207,16 +201,11 @@ a build directory.
 pattern already proven here: mousewheeld's `check-schema` regenerates and runs
 `git diff --quiet`.
 
-The generated types keep the *shapes* honest on their own — a field renamed in
-the proto stops the daemon compiling. What nothing catches without help is a
-**route**: a handler wired into the router with no rpc above it is public API
-that is written down nowhere, and an rpc whose route was never wired is a
-promise to a client that 404s. So `check-proto` reads the router and the service
-blocks and holds them to each other. mousewheeld's `tools/check_routes.py` is
-the reference implementation, and it reads the `.proto` as text on purpose: a
-custom option is only legible in a descriptor set with the protobuf runtime to
-hand, and this has to run in CI on a machine with nothing installed but
-`python3` — the same reason `check_outcomes.py` is regexes over source files.
+**There is no route checker any more.** There was one, in two repositories,
+holding a hand-maintained router to the rpcs in the `.proto` — a handler wired
+up with no rpc above it was public API written down nowhere. Under gRPC the
+generated service trait has a method per rpc and the compiler refuses an
+incomplete implementation, so the check is the type system's.
 
 `buf lint` and `buf breaking` run in CI. `buf breaking` is what turns §11's
 additive-only promise from a paragraph into something that fails a build.

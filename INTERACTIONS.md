@@ -531,53 +531,86 @@ not a design"* — and the transcription is where §5.1's bug is. So:
   and commit the output. Stronger, but it is a build step in repos with a
   no-build-step culture, and the test above catches the same class of bug.
 
-### And the narrower question that keeps coming back: gRPC for a new daemon?
+### The narrower question that kept coming back: gRPC ✅ **decided — yes, for control planes**
 
-Asked again when mousewheeld's HTTP API went in, and worth answering once
-rather than every time, because the instinct behind it is right: an API that
-exists only as annotations spread across six handler files is not an artifact
-anybody can read, and a `.proto` is. vstimd's `proto/vstimd/v1/` can be read
-start to finish; mousewheeld's OpenAPI document only exists after the binary
-runs.
+Asked when mousewheeld's HTTP API went in, and answered *no* at the time. The
+answer has changed, and the reasoning below is kept because the way it changed
+is the useful part: not one argument refuted, but **every premise it rested on
+altered by a later decision.**
 
-**The DSL is the part worth wanting. gRPC is the part that costs.** What decides
-it is not taste but who holds the other end:
+What the table said, and what happened to each row:
 
-| Consumer | HTTP+JSON | gRPC |
+| Consumer | The objection | What changed |
 |---|---|---|
-| **MATLAB** | `webread` / `webwrite` / `jsondecode`, built in, zero setup | nothing native — through the Python bridge or Java, or not at all |
-| A console panel | `fetch`, in a file served as written | generated stubs, and therefore a build step in repos whose element contract exists to avoid one |
-| triald | `httpx` and a pydantic model | a second client style in a Python codebase that has one |
-| A rig at 3 a.m. | `curl /api/state` | `grpcurl`, which is not installed |
+| **MATLAB** | `webread` is built in; gRPC has nothing native | deprioritised explicitly. MATLAB reaches a rig through the Python client. |
+| **A console panel** | generated stubs mean a build step, in repos whose element contract exists to avoid one | **the web UI may have a build step now.** That contract was about a *console* not needing one, and a generated client served by the daemon satisfies it. |
+| **triald** | a second client style in a Python codebase that has one | triald's own API is being generated too, so there is one style either way |
+| **A rig at 3 a.m.** | `curl /api/state`; `grpcurl` is not installed | **traded deliberately.** Each daemon has a client library and a CLI, and those are the supported way in. |
 
-MATLAB is the sharp end of it. It is also why §7's list cites MATLAB as a reason
-*for* protobuf on vstimd's event stream and this table cites it *against* gRPC
-on a control plane: those are different consumers doing different work. A
-scientist's script asking a daemon to arm a zone wants one line and no toolbox;
-a client decoding a high-rate stream is already writing real code and can pay
-for generated types.
+And one objection that was simply wrong rather than outdated: *gRPC needs a
+proxy for browsers*. `tonic-web` translates gRPC-Web in process. There is no
+Envoy, no second daemon, and no second port — the spike serves the panels, the
+REST API, gRPC, gRPC-Web and reflection from one listener.
 
-**So: the transport follows the consumer, not the family.** Control planes stay
-HTTP+JSON — statemachined, triald and mousewheeld — and high-rate streams are
-protobuf, over ZMQ rather than gRPC, as vstimd already does and as mousewheeld's
-event stream will. Note that this is protobuf *without* gRPC in both cases: the
-IDL is what earns its keep, and the RPC framework is what takes the curl and the
-`webread` away.
+**And the positive case, which is stronger than any of the above: these
+daemons do not do CRUD.** REST is a good fit for a resource graph, and a rig's
+control plane is not one. A trial loop is a sequence of *commands* — arm,
+select, report, cancel — and so is arming a zone set, taking a calibration
+measurement, or stepping a simulator. The URLs said so all along: **10 of
+mousewheeld's 24 routes and 17 of triald's 31 end in a verb**, because there
+was no noun to name.
 
-What is left of the original complaint is fair, and the answer has since gone
-further than this section proposed. It suggested committing the *generated*
-OpenAPI document, so the interface would at least be a file a reviewer reads and
-a diff shows. That was the right answer while the schemas could only be generated
-from FastAPI and Pydantic — and [`DAEMON_LAYOUT.md`](DAEMON_LAYOUT.md) is the
-decision to stop that being true: every daemon's public interface is
-**hand-authored** protobuf, types and rpcs both, with the generated code
-serialising and a convert seam keeping it out of the internals.
+    POST /api/calibration/measure/finish
+    POST /api/config/reset-counters
+    POST /api/session/recording/pause
 
-Nothing above changes. It is still protobuf as an IDL and not as a transport,
-still HTTP+JSON on every control plane, still `curl` and `webread`, still no
-shared proto repository — the files are vendored into `contracts/`, the way
-`outcomes.json` is. What changes is only which side is authored and which is
-generated.
+Those are rpcs written in a notation for resources. `Calibration.FinishMeasuring`
+is what they meant. The remaining routes that *are* nouns — a zone-set store, a
+trial-type store, a config — are a small minority, and reading a stored document
+is an rpc that happens to be idempotent.
+
+**What tipped it was noticing what was being built instead.** By the time
+mousewheeld and triald had their interfaces in proto, the family had also
+acquired `braemons.v1.route` (an option binding each rpc to an HTTP path),
+`check_routes.py` in two repos (holding routers and rpcs to each other),
+`/api/proto` (an endpoint announcing the interface), pinned JSON-mapping
+settings with a test file each, hand-rolled WebSocket envelopes, and a
+bespoke error-to-status mapping. Every one of those is a reimplementation of
+something gRPC ships, each individually justified, and the pattern is the
+argument.
+
+Measured on the spike (`mousewheeld`, branch `spike/grpc`):
+
+- reflection lists all five services and every rpc, with argument and return
+  types and which are streaming, to a client that has never seen the `.proto`.
+  That is what `/api/proto` was imitating.
+- a server stream is an associated type on a generated trait, not a hand-written
+  loop; three frames were read off `WatchWire` by a client built only from what
+  reflection said.
+- an rpc with no implementation is a compile error, which is the job
+  `check_routes.py` was doing by reading source code.
+- the prose in the `.proto` arrives as documentation on the generated methods.
+
+Costs, also measured: the release binary grows 115 MB → 142 MB with debug
+symbols; `grpcio` has manylinux **aarch64** wheels, so a Python daemon's
+vendored interpreter takes it the way it takes fastapi. The one new thing in
+the packaging pipeline is a build step for the web UI.
+
+**So: control planes become gRPC — statemachined, triald and mousewheeld.**
+What does *not* change:
+
+- **vstimd stays ZMQ.** It is time-critical, its clients decode a high-rate
+  stream, and nothing about gRPC helps there. §7's first table is still right
+  about it.
+- the fast bus — `vinput`, `vtl` — is shared memory and is not an RPC at all.
+- the device wire stays NDJSON + CRC to the board.
+
+Two findings from the spike worth carrying into the work:
+
+- an rpc named `Connect` collides with the generated client's own
+  `connect(dst)` constructor, so `Device.Connect` needs a different name.
+- reflection is a *bidirectional* streaming rpc and gRPC-Web cannot do bidi, so
+  a browser cannot use reflection. A client library can.
 
 ### And the same move in the other direction ✅ **done**
 
