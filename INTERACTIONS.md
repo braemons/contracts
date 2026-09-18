@@ -407,7 +407,7 @@ message**, which is the whole reason §7 says no to a proto repo.
 
 | Fact | Today |
 |---|---|
-| the `.tdr` outcome codes | ✅ five copies, held to `outcomes.json` by a vendored checker |
+| the `.tdr` outcome codes | 🔄 **now a protobuf enum**, `triald/proto/triald/v1/outcomes.proto`. statemachined still holds the JSON |
 | rig identity — a `rig=` TXT record salted `braemons:` | designed in `console/docs/PLAN.md` §4, built nowhere |
 | mDNS TXT keys — `id` `version` `api` `elements` `device` `port` | statemachined publishes all six; vstimd publishes `id` only, pointing at the ZMQ port |
 | VTL bit and line semantics | already a proper in-repo contract in `vstimd/vtl/` — leave it there |
@@ -432,11 +432,12 @@ a person will read them, and `check_outcomes.py` makes them one table. It also
 means no build step, no generated files and no "do not edit" headers — a
 strictly smaller thing than what §6 originally proposed.
 
-**Each repo vendors both files and tests its own copies against them**, offline,
-in its own CI: `triald/tests/contracts/` and
-`statemachined/python/tests/contracts/`. There is already precedent in the tree
-— `statemachined/python/tests/unit/wire_vectors.json` is vendored golden data
-doing the same job.
+**Each repo vendors the taxonomy and tests its own copies against it**, offline,
+in its own CI. triald does this against the enum, in
+`triald/tools/check_outcomes.py`; statemachined still holds
+`python/tests/contracts/outcomes.json` and takes the vendored enum when it is
+migrated. Until then `check_vendored_copies.py` here holds the two *formats* to
+each other, so the transition cannot drift in the middle.
 
 **Nothing checks a repo's copy against this one automatically, on purpose.** A
 repo reaching for the canonical file would be a build dependency wearing a
@@ -451,12 +452,38 @@ this repo is not optional any more, and every daemon being independently
 buildable is the property the whole architecture is arranged around. A vendored
 file plus a CI check gets the drift caught without the build dependency.
 
-**Why a data file rather than protobuf, specifically.** The firmware holds one
-of the five copies. The RA4M1 has 32 KB of SRAM with ~11 KB unclaimed, and
-`PROTOCOL.md` §6 deliberately puts *no names* on that wire — states, lines and
-distributions are integer indices — to avoid spending it. It will never link
-protobuf. A `.proto` file would therefore exclude the copy that is hardest to
-fix; `check_outcomes.py` reads the `enum class` directly and covers it.
+### Why a data file rather than protobuf — and why that argument failed
+
+This section used to end here, with the firmware as the decisive objection: it
+holds one of the copies, the RA4M1 has 32 KB of SRAM with ~11 KB unclaimed, it
+will never link protobuf, and a `.proto` would therefore exclude the copy that
+is hardest to fix.
+
+**The argument does not survive, and the mistake in it is worth keeping.** The
+firmware never needed to *link* anything. Only the checker needed to read the
+taxonomy, and a checker reads text — it read `enum class` out of C++ with a
+regex while holding it to a JSON file, and it reads an `enum` out of a `.proto`
+with a regex just as easily. "The firmware cannot consume protobuf" is true and
+was never the question; the question was what the *checker* consumes.
+
+So the taxonomy is now a protobuf enum, in
+[`triald/proto/triald/v1/outcomes.proto`](https://github.com/braemons/triald).
+It is the thing `outcomes.json` was imitating: numbers that are never reused,
+names that are a wire contract, and a format that a client generates from rather
+than parses. Two daemons need it — statemachined reports an outcome, triald
+records one — and it is vendored into statemachined byte-identically, which is
+the same arrangement with a better file format.
+
+**What the prose argument above got right survives.** These tables are four
+fifths prose and the prose is the part with value; it moved into the enum's
+comments, where a generated client carries it too. What did *not* survive is the
+claim that a `.proto` would cost the firmware its copy.
+
+Three facts the JSON carried are not in the enum — whether a graph may declare
+an outcome, whether it is accepted by default, and who assigns it. Each is used
+by exactly one daemon, so each lives where it is used, and each is held to the
+enum by `triald/tools/check_outcomes.py`. §5.2's defect was a *name and number*
+disagreement, which is exactly what an enum covers.
 
 For the `rig=` record, note that `console/docs/PLAN.md` §4 already reaches the
 same conclusion by a different route — its preferred fix is *"a few lines in

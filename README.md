@@ -33,9 +33,9 @@ only the consumer that is waiting can tell "not yet" from "never".
 |---|---|
 | [`INTERACTIONS.md`](INTERACTIONS.md) | the catalogue: every message between two daemons, its direction and payload, and what is still open |
 | [`DAEMON_LAYOUT.md`](DAEMON_LAYOUT.md) | the shape every daemon repository takes, and the rule that its public interface is hand-authored protobuf |
-| `outcomes.json` | the `.tdr` outcome codes, the source of truth for every copy of the table |
-| `check_outcomes.py` | vendored into each repo; reads that repo's own sources and holds them to `outcomes.json` |
-| `check_vendored_copies.py` | checks the vendored copies still match this one; `--fix` syncs them |
+| `outcomes.json` | the `.tdr` outcome codes — **superseded** by triald's protobuf enum, and kept only until statemachined takes it (`INTERACTIONS.md` §6) |
+| `check_outcomes.py` | vendored into statemachined; reads its sources and holds them to `outcomes.json` |
+| `check_vendored_copies.py` | checks the vendored copies still match this one, and that this one still says what triald's enum says; `--fix` syncs them |
 | [`e2e-tests/`](e2e-tests/README.md) | end-to-end tests across all three daemons, and the pinned releases they run against |
 | [`e2e-tests/WIRING.md`](e2e-tests/WIRING.md) | the physical rig the hardware tests assume, and how to run them on it |
 
