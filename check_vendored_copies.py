@@ -33,7 +33,7 @@ FAMILY = HERE.parent
 #: Where each repo keeps its copy. A repo that does not appear here has no copy
 #: to keep — vstimd has no outcome table, and console has no domain logic.
 VENDORED = [
-    FAMILY / "triald" / "tests" / "contracts",
+    FAMILY / "triald" / "daemon" / "tests" / "contracts",
     FAMILY / "statemachined" / "python" / "tests" / "contracts",
 ]
 

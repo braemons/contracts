@@ -41,6 +41,24 @@ The top level is language-neutral and the language appears one level down, in
 or `python/` or `src/`, because the family calls them daemons in every other
 sentence it writes.
 
+**A Python daemon has one wrinkle, and it is worth writing down because the
+obvious answer is wrong.** Rust embeds `../client/web` at compile time and that
+is the end of it; Python ships data *inside* a package, so the panels have to be
+copied in somewhere. hatchling will force-include a path from outside the
+project and it looks like the answer — but `uv build` builds the wheel from the
+sdist, an sdist cannot contain a path above its own root, and the wheel then
+fails on a machine that never saw the repository. The copy belongs in the
+packaging step, which is already copying a staged tree, and the daemon falls
+back to the authored location when no copy has been made — which is every
+editable install, and therefore every developer. triald's
+`packaging/Makefile` and `api/app.py` are the reference.
+
+`daemon/` also needs its own `README.md` and `LICENSE`: PEP 621 metadata may not
+point above the project directory, and a symlink does not survive the sdist
+either. The package README is a different document from the repository's — one
+is read after `pip install`, the other on GitHub — so this is not a copy. The
+licence text is.
+
 **`client/` is a sibling of `daemon/`, never a subdirectory of it.** A person who
 wants to talk to a rig should not have to install the thing that runs one.
 statemachined is the cautionary case: its client lives inside the daemon package
