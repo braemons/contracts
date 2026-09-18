@@ -32,6 +32,7 @@ only the consumer that is waiting can tell "not yet" from "never".
 | | |
 |---|---|
 | [`INTERACTIONS.md`](INTERACTIONS.md) | the catalogue: every message between two daemons, its direction and payload, and what is still open |
+| [`DAEMON_LAYOUT.md`](DAEMON_LAYOUT.md) | the shape every daemon repository takes, and the rule that its public interface is hand-authored protobuf |
 | `outcomes.json` | the `.tdr` outcome codes, the source of truth for every copy of the table |
 | `check_outcomes.py` | vendored into each repo; reads that repo's own sources and holds them to `outcomes.json` |
 | `check_vendored_copies.py` | checks the vendored copies still match this one; `--fix` syncs them |

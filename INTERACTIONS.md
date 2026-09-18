@@ -482,6 +482,9 @@ wrong about the remedy. Recorded here so it is not re-proposed.
 - **The schemas cannot be authored in proto today.** triald's and
   statemachined's OpenAPI is *generated from* FastAPI/Pydantic. Inverting that
   means rewriting both APIs around generated types to fix one missing field.
+  *(Since decided: that inversion is worth it for its own sake, and is planned
+  per repository rather than as one shared repo — see
+  [`DAEMON_LAYOUT.md`](DAEMON_LAYOUT.md).)*
 - **The firmware cannot consume it.** §6.
 
 **What replaces it for reviewability is this document plus §8's conformance
@@ -534,11 +537,20 @@ event stream will. Note that this is protobuf *without* gRPC in both cases: the
 IDL is what earns its keep, and the RPC framework is what takes the curl and the
 `webread` away.
 
-What is left of the original complaint is fair, and has a cheap answer: **commit
-the generated OpenAPI document** so the interface is a file in the repository
-that a reviewer reads and a diff shows, with CI failing when it drifts from the
-code. Generated, so there is no second copy to maintain; committed, so it is
-reviewable. That is the artifact the question was really asking for.
+What is left of the original complaint is fair, and the answer has since gone
+further than this section proposed. It suggested committing the *generated*
+OpenAPI document, so the interface would at least be a file a reviewer reads and
+a diff shows. That was the right answer while the schemas could only be generated
+from FastAPI and Pydantic — and [`DAEMON_LAYOUT.md`](DAEMON_LAYOUT.md) is the
+decision to stop that being true: every daemon's public interface is
+**hand-authored** protobuf, types and rpcs both, with the generated code
+serialising and a convert seam keeping it out of the internals.
+
+Nothing above changes. It is still protobuf as an IDL and not as a transport,
+still HTTP+JSON on every control plane, still `curl` and `webread`, still no
+shared proto repository — the files are vendored into `contracts/`, the way
+`outcomes.json` is. What changes is only which side is authored and which is
+generated.
 
 ### And the same move in the other direction ✅ **done**
 
