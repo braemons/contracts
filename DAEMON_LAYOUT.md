@@ -103,8 +103,18 @@ tolerated:
 |---|---|---|
 | camelCase | `position_cm` → `positionCm` | `json_name` on every field whose name is more than one word |
 | int64 | `41822` → `"41822"` | accepted; clients parse. A counts field that is not an integer misleads every reader of the proto |
-| enums | `displacement` → `ZONE_METRIC_DISPLACEMENT` | keep an enum off the wire where a *file* carries the same value |
-| unknown fields | ignored by default | put the refusal back by hand on requests — §11 says requests refuse and responses ignore |
+| enums | `DISPLACEMENT` or `ZONE_METRIC_DISPLACEMENT`, depending on the generator | **keep the prefix**, on both sides of every generator |
+| a field at its default | omitted entirely | **emit it**: a wheel at rest must not answer without a `position_cm` |
+| unknown fields | refused or ignored, depending on the generator | refuse them, which is §11's rule for a request and pbjson's default |
+
+The last three are settings, not laws, and the settings are per generator — which
+is the trap. `pbjson` strips an enum's prefix by default and Python's
+`json_format` does not, so two clients generated from one `.proto` disagree
+about the same byte. A daemon's generator options are part of its interface and
+belong in a test that prints the bytes, not in somebody's memory.
+
+mousewheeld's `daemon/tests/wire_json.rs` is that test: eight cases, every
+assertion written by printing the JSON first.
 
 If the daemon's own serde or pydantic types keep producing the bytes and the
 proto merely describes them, this whole arrangement is OpenAPI again with a
