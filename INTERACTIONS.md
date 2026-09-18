@@ -66,6 +66,10 @@ Three interactions on the slow bus, and their directions are now settled:
 | **B** | statemachined ⇢ triald | **broadcast**, subscribed | every event |
 | **C** | vstimd ⇢ triald | **broadcast**, subscribed | every event |
 
+A fourth participant is designed but unbuilt — mousewheeld, the locomotion
+input, with rows **D**, **E** and **F** in §3. It changes nothing about the
+three above, which is the test the rule is meant to pass.
+
 ### The rule the three now follow
 
 **A participant publishes what it observed and commands nobody. A decision
@@ -252,6 +256,42 @@ Not interactions in the sense above — no request, no reply, no schema to revie
 | `vstimd/vtl/` | the shared-memory layout: 4 input banks, 1 output bank, `u64` each, rise/fall latches, drained once per frame at frame start |
 | `gpiochip-daqd` | VTL ⇄ `/dev/gpiochipN`. Input edges from kernel events, outputs mirrored onto pins |
 | `statemachined/dev/PROTOCOL.md` | USB CDC, NDJSON, CRC, indices-not-names. The daemon ⇄ firmware link |
+| `vstimd/vinput/` | the second shared-memory layout: a seqlock, `f64` axis values and a writer heartbeat, read once per frame. Where a wheel or an eye tracker reaches the camera (§3 D–F) |
+
+### D, E, F — mousewheeld, a fourth participant
+
+**Proposed, not agreed here yet.** The design is `mousewheeld/dev/PLAN.md`;
+these rows are in this catalogue so that a reviewer looking for "how does the
+wheel reach the camera" finds an answer rather than silence. Nothing about the
+daemon is built — but half of F is, on vstimd's side, which is why it is worth
+writing down before the rest is.
+
+mousewheeld reads a running-wheel encoder and publishes how far the animal went.
+It is a **participant** under §2's rule: no `vstimd_address`, no
+`triald_base_url`, no outbound call of any kind.
+
+| | | Direction | Rate |
+|---|---|---|---|
+| **D** | triald → mousewheeld: place a mark, arm a zone set | command | per trial |
+| **E** | mousewheeld ⇢ triald: the path since a mark, zone hits | read / subscribed | per trial, or every event |
+| **F** | mousewheeld ⇢ vstimd: `vinput` shared memory | **fast bus** | every sample |
+
+**F is not an interaction in this catalogue's sense, and must never become
+one.** vstimd needs the position *inside* the frame it is drawing: shared memory
+costs <1 µs with <1 µs of jitter, where ZMQ PUB on localhost costs 20–80 µs with
+spikes past 200 µs — which at 240 Hz is a randomly dropped frame
+(`vstimd/dev/INPUT_LATENCY.md` §2). So the producer writes a segment whose
+layout vstimd defines, vstimd names a device in its rig config and never learns
+who writes it, and neither has a client of the other. Exactly the arrangement
+`gpiochip-daqd` and VTL already have. A camera on another host is served by a
+relay process that subscribes and writes local shm, not by teaching vstimd to
+subscribe.
+
+**Zone TTLs do not appear above, deliberately.** "The animal has run 200 cm" is
+decided on the device, in the scan that sees the count, and leaves as a TTL edge
+into statemachined and daqd — the fast bus, like stimulus onset. Routing an
+outcome that must be *timed* through the slow bus is the mistake §2's last
+paragraph exists to prevent. triald records the hit afterwards, over E.
 
 ## 4. What is built
 
@@ -274,6 +314,9 @@ Not interactions in the sense above — no request, no reply, no schema to revie
 | a client subscribes to the stream | `vstimd.events` (vstimd-client) | ✅ |
 | triald wires the two together | — | ❌ the last gap |
 | readiness gate `configure→ready→start` | designed, `triald/dev/PLAN.md` | ❌ not built |
+| **F** vstimd reads a position device | `vstimd/vinput/`, `input/devices.rs`, `[[input.device]]`, `LinearNav3D` | ✅ `0.3`, consumer half |
+| **F** anything writes one | — | ❌ no producer exists |
+| **D**, **E** mousewheeld itself | `mousewheeld/dev/PLAN.md` | ❌ a plan, M0–M7 all open |
 
 ## 5. Three defects, all in interaction B
 
@@ -457,6 +500,45 @@ not a design"* — and the transcription is where §5.1's bug is. So:
 - **Later, optional:** generate the client model with `datamodel-code-generator`
   and commit the output. Stronger, but it is a build step in repos with a
   no-build-step culture, and the test above catches the same class of bug.
+
+### And the narrower question that keeps coming back: gRPC for a new daemon?
+
+Asked again when mousewheeld's HTTP API went in, and worth answering once
+rather than every time, because the instinct behind it is right: an API that
+exists only as annotations spread across six handler files is not an artifact
+anybody can read, and a `.proto` is. vstimd's `proto/vstimd/v1/` can be read
+start to finish; mousewheeld's OpenAPI document only exists after the binary
+runs.
+
+**The DSL is the part worth wanting. gRPC is the part that costs.** What decides
+it is not taste but who holds the other end:
+
+| Consumer | HTTP+JSON | gRPC |
+|---|---|---|
+| **MATLAB** | `webread` / `webwrite` / `jsondecode`, built in, zero setup | nothing native — through the Python bridge or Java, or not at all |
+| A console panel | `fetch`, in a file served as written | generated stubs, and therefore a build step in repos whose element contract exists to avoid one |
+| triald | `httpx` and a pydantic model | a second client style in a Python codebase that has one |
+| A rig at 3 a.m. | `curl /api/state` | `grpcurl`, which is not installed |
+
+MATLAB is the sharp end of it. It is also why §7's list cites MATLAB as a reason
+*for* protobuf on vstimd's event stream and this table cites it *against* gRPC
+on a control plane: those are different consumers doing different work. A
+scientist's script asking a daemon to arm a zone wants one line and no toolbox;
+a client decoding a high-rate stream is already writing real code and can pay
+for generated types.
+
+**So: the transport follows the consumer, not the family.** Control planes stay
+HTTP+JSON — statemachined, triald and mousewheeld — and high-rate streams are
+protobuf, over ZMQ rather than gRPC, as vstimd already does and as mousewheeld's
+event stream will. Note that this is protobuf *without* gRPC in both cases: the
+IDL is what earns its keep, and the RPC framework is what takes the curl and the
+`webread` away.
+
+What is left of the original complaint is fair, and has a cheap answer: **commit
+the generated OpenAPI document** so the interface is a file in the repository
+that a reviewer reads and a diff shows, with CI failing when it drifts from the
+code. Generated, so there is no second copy to maintain; committed, so it is
+reviewable. That is the artifact the question was really asking for.
 
 ### And the same move in the other direction ✅ **done**
 
@@ -702,3 +784,121 @@ so — which is exactly what `e2e-tests/` caught first (§3C).
 The rule in the README still holds: nothing installs this repository. `e2e-tests/`
 installs all three daemons and can only do that because nothing installs `e2e-tests/`.
 It is downstream of everything and upstream of nothing.
+
+## 11. Versioning, and what is promised from 1.0
+
+> **Status: nothing below is promised yet.** Every daemon here is pre-1.0, and
+> until each reaches it these rules describe *how* interfaces are meant to
+> evolve rather than what anybody may rely on. Breaking changes are allowed now,
+> and are being made — `answers` replaced a doubled `message_id` in
+> mousewheeld's wire protocol the week this was written, and vstimd's
+> `[[input.device.axis]] scale` changed meaning in `0.3`. **From 1.0 onward the
+> rules in *The promise* are binding**, and a change that breaks one of them is
+> a major version.
+>
+> The point of writing them down now is that they are cheap to follow while
+> everything is still moving, and expensive to retrofit afterwards.
+
+### The question is not "should we version" but "what happens when the two sides disagree"
+
+That has three different answers on a braemons rig, and they must not share a
+mechanism.
+
+| | Who is on the other end | On a mismatch | How it is versioned |
+|---|---|---|---|
+| **Shared memory** (`vtl`, `vinput`) | another process on the same host, mapping the same bytes | **refuse to map** | a magic and an integer version *inside the segment*, checked at open |
+| **A device wire** (statemachined ⇄ firmware, mousewheeld ⇄ firmware) | firmware that is flashed separately and will be older | refuse **below a floor**, tolerate above it | `protocol_version` in `hello`/`hello_ack`, plus additive evolution |
+| **Daemon to daemon** (HTTP, ZMQ, protobuf) | another daemon, upgraded on its own schedule | **carry on** | advertised, never gated |
+
+**Shared memory is the strict one, and it is the only strict one.** A mismatched
+`#[repr(C)]` struct is not a missing field: it is bytes reinterpreted, a wheel
+reading as an eye tracker with entirely plausible numbers. Both crates already
+refuse to map a segment whose magic or version does not match, and that check is
+what makes it safe for a producer in another repository to pin the crate at a
+tag: the pin is a promise, the magic is the proof.
+
+**A version gate between daemons is a mistake.** It converts every upgrade into
+a coordinated one, on a rig whose whole arrangement (§2) is that each daemon
+runs alone and commands nobody. statemachined must come up and work with no
+triald on the network, and with a triald three versions newer.
+
+### The rule: requests refuse unknown fields, responses ignore them
+
+This is the asymmetry everything else follows from, and it is not a compromise
+between strict and lax — the two directions genuinely differ.
+
+- **A request is a command from software that believes it said something.** If
+  triald sends `{zone_set, patch, origin, hysteresis_override}` and the daemon
+  silently drops the field it does not know, the trial runs with a zone nobody
+  asked for. Doing *part* of what was asked is worse than doing none of it, so
+  an unknown field in a request is refused, by name.
+- **A response, a broadcast or a record must survive a newer producer**, or
+  every upgrade is a flag day. A consumer ignores what it does not recognise.
+
+In practice: `deny_unknown_fields` on every input type, nothing of the kind on
+output; proto3 on the wire, which is tolerant by construction; and an unknown
+enum value decoded as its `UNSPECIFIED` variant rather than refused (vstimd's
+`Enum::try_from(v).unwrap_or(Unspecified)` is the shape).
+
+The consequence is worth stating plainly, because it is the half people forget:
+**a client must not send a field the daemon does not know.** Old daemons do not
+tolerate new clients' requests, deliberately. If a client needs a field that may
+not be there, it asks what it is talking to first.
+
+### So are we forward compatible?
+
+Not yet, and the words are worth separating.
+
+| | Means | State |
+|---|---|---|
+| **Backward compatible** | new code reads old data; a new daemon serves an old client | mostly, by additive habit; not promised |
+| **Forward compatible** | old code tolerates new data; an old consumer survives a newer producer | **for responses, broadcasts and records** — this is what proto3 and ignore-unknown buy |
+| Forward compatible *requests* | an old daemon tolerates a newer client's command | **no, and deliberately never** — see the rule above |
+
+### The promise, from 1.0
+
+Within a major version, for every interface in §3 and the fast bus beside it:
+
+1. **Additive only.** Fields, message types, routes and enum values may be
+   added. Nothing is removed, renamed, renumbered or given a new meaning.
+   A protobuf field number is never reused, ever, including across majors.
+2. **Responses, broadcasts and records stay readable by older consumers.** A
+   consumer that ignores what it does not recognise keeps working.
+3. **Requests keep refusing unknown fields.** A client that needs a new field
+   checks the version first; that is what the version advertisement is for.
+4. **A shared-memory layout change bumps the version in the segment** and is a
+   coordinated upgrade of both packages by definition — the reader refuses the
+   writer until both are replaced. It is therefore a major event even when the
+   daemon's own version is not.
+5. **A device wire keeps a floor**: a daemon states the oldest `protocol_version`
+   it speaks and refuses below it, by name, rather than talking to firmware it
+   half-understands.
+6. **Defaults are part of the interface.** A field whose default changes is a
+   field whose meaning changed.
+
+### Where a version is stated
+
+A console showing three daemons' panels needs to know what it is showing, and
+the daemons cannot agree on a transport: statemachined, triald and mousewheeld
+speak HTTP+JSON, and vstimd's control surface is protobuf over a WebSocket. So
+the uniform place is the one they already share — **the mDNS TXT record**, which
+carries `id`, `version`, `api`, `elements`, `device` and `port` today.
+
+- `version` — the daemon's own release.
+- `api` — the interface contract's major version, which is what a client cares
+  about and is not the same number.
+- `proto` — for a daemon that owns firmware, the device `protocol_version` range
+  it speaks.
+
+Each daemon also answers in its own surface, in its own shape: vstimd in
+`QueryServerInfo`, the others on a route. **Do not force a common transport for
+this**; forcing a REST endpoint onto vstimd to satisfy a table would be the
+wrong end of the stick.
+
+### What is not versioned
+
+**The shared vocabulary of §6.** The `.tdr` outcome taxonomy lives in five
+copies across two repositories, one of them firmware, and they must be
+*identical* — a version number would only make being legitimately out of step
+expressible. The check for that is `check_outcomes.py` in CI: a test, not a
+number on a wire.
