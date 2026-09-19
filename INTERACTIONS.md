@@ -907,15 +907,32 @@ between strict and lax — the two directions genuinely differ.
 - **A response, a broadcast or a record must survive a newer producer**, or
   every upgrade is a flag day. A consumer ignores what it does not recognise.
 
-In practice: `deny_unknown_fields` on every input type, nothing of the kind on
-output; proto3 on the wire, which is tolerant by construction; and an unknown
-enum value decoded as its `UNSPECIFIED` variant rather than refused (vstimd's
-`Enum::try_from(v).unwrap_or(Unspecified)` is the shape).
+**Where it can be enforced, it is; on the binary wire it cannot be, and saying
+otherwise is worse than admitting it.** This rule was written when the
+interfaces were HTTP and JSON, where `deny_unknown_fields` is one setting on an
+input type. protobuf's parsers *keep* unknown fields rather than refusing them —
+that is how proto3 achieves the forward compatibility the second half of this
+asymmetry depends on — and no daemon in this family can opt out. Concretely:
+
+| Path | Refuses an unknown field? |
+|---|---|
+| a browser, over JSON — `fromJson`, `json_format.Parse(…, ignore_unknown_fields=False)` | **yes**, by name, before a handler sees it |
+| a generated client, over the binary wire | **no**, and cannot |
+
+So the rule stands as a rule *for clients*, and the daemon enforces it where the
+parser lets it. What carries the weight instead is the thing that made the rule
+necessary: a field is never renumbered or given a new meaning (§11, promise 1),
+so a field an old daemon does not know is a field that did not exist, and
+ignoring it costs a command that was never going to work rather than a command
+half-done under a name that now means something else.
+
+An unknown enum value is decoded as its `UNSPECIFIED` variant rather than
+refused (vstimd's `Enum::try_from(v).unwrap_or(Unspecified)` is the shape).
 
 The consequence is worth stating plainly, because it is the half people forget:
-**a client must not send a field the daemon does not know.** Old daemons do not
-tolerate new clients' requests, deliberately. If a client needs a field that may
-not be there, it asks what it is talking to first.
+**a client must not send a field the daemon does not know.** If a client needs a
+field that may not be there, it asks what it is talking to first — and must not
+expect to be told off for guessing wrong.
 
 ### So are we forward compatible?
 
@@ -925,7 +942,7 @@ Not yet, and the words are worth separating.
 |---|---|---|
 | **Backward compatible** | new code reads old data; a new daemon serves an old client | mostly, by additive habit; not promised |
 | **Forward compatible** | old code tolerates new data; an old consumer survives a newer producer | **for responses, broadcasts and records** — this is what proto3 and ignore-unknown buy |
-| Forward compatible *requests* | an old daemon tolerates a newer client's command | **no, and deliberately never** — see the rule above |
+| Forward compatible *requests* | an old daemon tolerates a newer client's command | **not promised, and not designed for** — see the rule above. On the binary wire an old daemon will in fact ignore a field it does not know, which is a parser's behaviour rather than a guarantee to build on |
 
 ### The promise, from 1.0
 
@@ -936,8 +953,10 @@ Within a major version, for every interface in §3 and the fast bus beside it:
    A protobuf field number is never reused, ever, including across majors.
 2. **Responses, broadcasts and records stay readable by older consumers.** A
    consumer that ignores what it does not recognise keeps working.
-3. **Requests keep refusing unknown fields.** A client that needs a new field
-   checks the version first; that is what the version advertisement is for.
+3. **Requests refuse unknown fields wherever the parser allows it**, which is
+   every JSON path and no binary one. A client that needs a new field checks the
+   version first rather than relying on being refused; that is what the version
+   advertisement is for.
 4. **A shared-memory layout change bumps the version in the segment** and is a
    coordinated upgrade of both packages by definition — the reader refuses the
    writer until both are replaced. It is therefore a major event even when the
