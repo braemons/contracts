@@ -10,11 +10,11 @@ help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
 
-# There is no `check` target holding the daemons' sources to outcomes.json, and
-# that is not an omission. `check_outcomes.py` is a *library*, imported by a test
-# inside each repo, which is what lets it run offline against that repo's own
-# vendored copy. Nothing here reaches into another repo to check it — that would
-# be the build dependency this whole arrangement exists to avoid.
+# There is no `check` target holding the daemons' sources to the taxonomy, and
+# that is not an omission. Each repo has its own `make check-proto`, which reads
+# its own sources against its own vendored copy, offline. Nothing here reaches
+# into another repo to check it — that would be the build dependency this whole
+# arrangement exists to avoid.
 #
 # What can only be done here is the other direction: are those copies still this
 # one? Whoever changes the taxonomy is standing in this directory anyway.

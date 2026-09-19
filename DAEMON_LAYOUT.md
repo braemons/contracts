@@ -205,7 +205,7 @@ described it. The file wins, because a person types it.
 ### What proto does not touch
 
 - **Files on disk.** Zone sets, graph definitions, state-machine configs, line
-  maps, scene-configs, policies, `outcomes.json`. These are documents somebody
+  maps, scene-configs, policies. These are documents somebody
   writes and reviews in a diff; they keep serde/pydantic and their own JSON
   Schema. mousewheeld's committed `zone-set.schema.json` stays exactly as it is.
 - **The fast bus.** `vinput` and `vtl` are a seqlock over a C layout, not a
@@ -255,7 +255,8 @@ Each daemon's `proto/` is in its own repository, and `contracts/vendored/proto/`
 holds a copy of all four for reading side by side — plus `braemons/v1/`, which
 is canonical here because it belongs to no one daemon.
 
-This is the `outcomes.json` arrangement, for the same reason: a single shared
+This is the arrangement `outcomes.json` had before it became a proto, for the
+same reason: a single shared
 proto repository is a build dependency in every daemon, and "small and optional
 interfaces" does not survive one. §7 records that argument in full. Vendoring
 costs exactly one thing — nothing makes the copies match — and

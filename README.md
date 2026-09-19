@@ -33,9 +33,8 @@ only the consumer that is waiting can tell "not yet" from "never".
 |---|---|
 | [`INTERACTIONS.md`](INTERACTIONS.md) | the catalogue: every message between two daemons, its direction and payload, and what is still open |
 | [`DAEMON_LAYOUT.md`](DAEMON_LAYOUT.md) | the shape every daemon repository takes, and the rule that its public interface is hand-authored protobuf |
-| `outcomes.json` | the `.tdr` outcome codes — **superseded** by triald's protobuf enum, and kept only until statemachined takes it (`INTERACTIONS.md` §6) |
-| `check_outcomes.py` | vendored into statemachined; reads its sources and holds them to `outcomes.json` |
-| `check_vendored_copies.py` | checks the vendored copies still match this one, and that this one still says what triald's enum says; `--fix` syncs them |
+| [`vendored/proto/`](vendored/proto/) | every daemon's `proto/`, for reading side by side — plus `braemons/v1/`, which is **canonical here** because it belongs to no one daemon. Today that is the `.tdr` outcome taxonomy, which statemachined reports in and triald records in |
+| `check_vendored_copies.py` | are the daemons' copies of `braemons/v1/` still this one? `--fix` syncs them |
 | [`e2e-tests/`](e2e-tests/README.md) | end-to-end tests across all three daemons, and the pinned releases they run against |
 | [`e2e-tests/WIRING.md`](e2e-tests/WIRING.md) | the physical rig the hardware tests assume, and how to run them on it |
 
@@ -43,7 +42,7 @@ only the consumer that is waiting can tell "not yet" from "never".
 
 | | |
 |---|---|
-| **static** | `INTERACTIONS.md` says what the daemons promise each other. `check_outcomes.py` reads each repo's sources (Python enums, a C++ header, a JavaScript table) and holds them to `outcomes.json`. It runs offline, in each repo's CI, against a vendored copy. |
+| **static** | `INTERACTIONS.md` says what the daemons promise each other, and each daemon's `proto/` says what it accepts and answers. Each repo's own `make check-proto` reads its sources — Python enums, a C++ header, a JavaScript table — and holds them to its vendored copy of `braemons/v1/`. It runs offline, in that repo's CI. |
 | **dynamic** | `e2e-tests/` installs the released packages of all three daemons, starts them as an operator would, and runs experiments across them: through triald, and through a single script with no triald. It checks what no static reader can, such as that vstimd's frame axis is the one a trial is bounded by. |
 
 A renamed outcome breaks the static checker in every repo within seconds. A frame

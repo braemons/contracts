@@ -28,7 +28,7 @@ authority is (§2). vstimd and statemachined know nobody: they publish what they
 observed and command nothing.
 
 So the catalogue could go in triald, and it should not. The things here are not
-triald's. The `.tdr` taxonomy lives in five copies across two repos, one of them
+triald's. The `.tdr` taxonomy is restated in both repos, one of them
 firmware that will never link a Python package, and statemachined needs it to
 compile a graph on a bench with no triald anywhere — putting the canonical copy
 in triald would make every other repo depend on the *decision authority* to know
@@ -407,7 +407,7 @@ message**, which is the whole reason §7 says no to a proto repo.
 
 | Fact | Today |
 |---|---|
-| the `.tdr` outcome codes | 🔄 **now a protobuf enum**, `triald/proto/triald/v1/outcomes.proto`. statemachined still holds the JSON |
+| the `.tdr` outcome codes | ✅ **a protobuf enum**, `braemons/v1/trial_outcome.proto`, canonical here and vendored into both daemons |
 | rig identity — a `rig=` TXT record salted `braemons:` | designed in `console/docs/PLAN.md` §4, built nowhere |
 | mDNS TXT keys — `id` `version` `api` `elements` `device` `port` | statemachined publishes all six; vstimd publishes `id` only, pointing at the ZMQ port |
 | VTL bit and line semantics | already a proper in-repo contract in `vstimd/vtl/` — leave it there |
@@ -417,8 +417,8 @@ The first three become files here:
 ```
 contracts/
 ├── INTERACTIONS.md            this document
-├── outcomes.json              ✅ the (name, value) pairs — the source of truth
-├── check_outcomes.py          ✅ vendored into each repo; reads its sources
+├── DAEMON_LAYOUT.md           ✅ the shape every repo takes, and where proto lives
+├── vendored/proto/            ✅ every daemon's proto/, plus braemons/v1/ — canonical
 ├── check_vendored_copies.py   ✅ are the copies still this one? --fix syncs them
 └── mdns.md                    the TXT keys, and the rig= salt
 ```
@@ -427,17 +427,25 @@ contracts/
 wrong.** These tables are four fifths prose, and the prose is the part with
 value: *why* code 8 is spelled correctly, why two codes may not be declared, who
 may assign `NEVER_FINISHED`. Generating them deletes exactly that, or forces it
-into a JSON field nobody reads in context. So the copies stay hand-written where
-a person will read them, and `check_outcomes.py` makes them one table. It also
-means no build step, no generated files and no "do not edit" headers — a
-strictly smaller thing than what §6 originally proposed.
+into a field nobody reads in context. So the copies stay hand-written where a
+person will read them, and each repo's `check-proto` makes them one table. A
+protobuf enum keeps that property: the prose is comments beside the values,
+which is where it was always going.
 
 **Each repo vendors the taxonomy and tests its own copies against it**, offline,
-in its own CI. triald does this against the enum, in
-`triald/tools/check_outcomes.py`; statemachined still holds
-`python/tests/contracts/outcomes.json` and takes the vendored enum when it is
-migrated. Until then `check_vendored_copies.py` here holds the two *formats* to
-each other, so the transition cannot drift in the middle.
+in its own CI — `triald/tools/check_outcomes.py` and
+`statemachined/tools/check_outcomes.py`, each reading its own sources against
+its own vendored `braemons/v1/trial_outcome.proto`. `check_vendored_copies.py`
+here answers the other direction, which can only be answered here: are those
+copies still this one?
+
+**Three facts the JSON carried did not come with it**, and their absence is the
+point. It said which outcomes are `declarable`, `accepted_by_default` and
+`countable`; each is used by exactly one daemon, so a shared file holding them
+was a shared file holding one-daemon facts. `declarable` lives in
+statemachined's `NOT_DECLARABLE`, the other two in triald's `Acceptance`
+message and its counters panel, and each repo's checker holds its own copies to
+its own rule.
 
 **Nothing checks a repo's copy against this one automatically, on purpose.** A
 repo reaching for the canonical file would be a build dependency wearing a
@@ -466,23 +474,33 @@ regex while holding it to a JSON file, and it reads an `enum` out of a `.proto`
 with a regex just as easily. "The firmware cannot consume protobuf" is true and
 was never the question; the question was what the *checker* consumes.
 
-So the taxonomy is now a protobuf enum, in
-[`triald/proto/triald/v1/outcomes.proto`](https://github.com/braemons/triald).
-It is the thing `outcomes.json` was imitating: numbers that are never reused,
-names that are a wire contract, and a format that a client generates from rather
-than parses. Two daemons need it — statemachined reports an outcome, triald
-records one — and it is vendored into statemachined byte-identically, which is
-the same arrangement with a better file format.
+So the taxonomy is now a protobuf enum, `braemons/v1/trial_outcome.proto`,
+canonical in this repository's `vendored/proto/` and vendored into both daemons
+byte-identically. It is the thing `outcomes.json` was imitating: numbers that
+are never reused, names that are a wire contract, and a format that a client
+generates from rather than parses.
+
+**`braemons.v1`, and not either daemon's package, because neither owns it.**
+statemachined reports an outcome and triald records one; a package named after
+one of the two would make the other import its neighbour's interface to say
+what a trial did. It is the only thing in `braemons.v1`, and the bar for a
+second is the same: a type two daemons must agree on and neither is the
+authority for. It lived in `triald.v1` for one release cycle, which was long
+enough to show the problem — vendored into statemachined, `package triald.v1`
+would have put a `triald` module inside statemachined's generated tree, on rigs
+where the real `triald` is installed.
 
 **What the prose argument above got right survives.** These tables are four
 fifths prose and the prose is the part with value; it moved into the enum's
 comments, where a generated client carries it too. What did *not* survive is the
-claim that a `.proto` would cost the firmware its copy.
+claim that a `.proto` would cost the firmware its copy: the firmware keeps a
+hand-written C++ enum, and `statemachined/tools/check_outcomes.py` holds it to
+the proto by reading both as text.
 
 Three facts the JSON carried are not in the enum — whether a graph may declare
 an outcome, whether it is accepted by default, and who assigns it. Each is used
 by exactly one daemon, so each lives where it is used, and each is held to the
-enum by `triald/tools/check_outcomes.py`. §5.2's defect was a *name and number*
+enum by that daemon's own checker. §5.2's defect was a *name and number*
 disagreement, which is exactly what an enum covers.
 
 For the `rig=` record, note that `console/docs/PLAN.md` §4 already reaches the
@@ -791,8 +809,9 @@ starts to earn itself**, and not before.
    terminal state declaring "nobody heard from me" is a contradiction.
 
    **The rule this leaves:** extending the taxonomy is fine; renumbering never
-   is; and a new name must land in all five copies at once, because outcomes
-   cross the wire *by name*.
+   is; and a new name must land in the enum and every copy of it at once,
+   because outcomes cross the wire *by name*. Each repo's `check-proto` is what
+   makes "at once" a failing build rather than a hope.
 
    *(The original text, for the reasoning:)* **the one thing the broadcast model
    needs that is not built.** `Session.next_trial()` sets `_current` and nothing
@@ -842,8 +861,8 @@ plan worth writing down rather than quietly doing.
 The plan asked whether a `rig-integration` repo should exist. It should not,
 because it would be *this* repo with a different name. The two things do the same
 job at different distances: `INTERACTIONS.md` says what the daemons promise each
-other and `check_outcomes.py` proves each repo's sources still say it, statically
-and offline; `e2e-tests/` starts all three and watches them keep the promise. A
+other and each repo's `make check-proto` proves its sources still say it,
+statically and offline; `e2e-tests/` starts all three and watches them keep the promise. A
 contract nobody checks is a wish; a suite of assertions with no written contract
 is something nobody can argue with.
 
@@ -988,8 +1007,8 @@ wrong end of the stick.
 
 ### What is not versioned
 
-**The shared vocabulary of §6.** The `.tdr` outcome taxonomy lives in five
-copies across two repositories, one of them firmware, and they must be
-*identical* — a version number would only make being legitimately out of step
-expressible. The check for that is `check_outcomes.py` in CI: a test, not a
-number on a wire.
+**The shared vocabulary of §6.** The `.tdr` outcome taxonomy lives in one
+protobuf enum and a handful of copies across two repositories, one of them
+firmware, and they must be *identical* — a version number would only make being
+legitimately out of step expressible. The check for that is each repo's
+`check-proto` in CI: a test, not a number on a wire.
