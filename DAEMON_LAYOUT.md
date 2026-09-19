@@ -74,13 +74,41 @@ regenerates; `make check-web` regenerates and fails if the committed bundle is
 not what `proto/` produces — the same arrangement the generated server code is
 already under, for the same reason. Only the client is bundled: the panels stay
 plain ES modules served as written, so editing one and reloading the page still
-works. mousewheeld's `client/web/build.mjs` is the reference.
+works. mousewheeld's `client/web/build_daemon_api_client.mjs` is the reference.
 
 **`client/` is a sibling of `daemon/`, never a subdirectory of it.** A person who
 wants to talk to a rig should not have to install the thing that runs one.
 statemachined is the cautionary case: its client lives inside the daemon package
 today, so `pip install` for a one-line script pulls in a serial driver, a graph
 store and a web server.
+
+### Names are long, and say what the thing is
+
+A name is read far more often than it is typed, and the reader is usually
+somebody who has not seen this file before. So: **a class or a file is named
+for what it is, in full, and an abbreviation is not a name.**
+`SerialMonitorPanelElement`, `file_schema_types.rs`, `daemon_refusals.py`,
+`build_daemon_api_client.mjs`, `DaemonRefusedTheRequest`.
+
+Three rules that follow, and each was learned by getting it wrong:
+
+* **A client is `<Daemon>Client`** — `MousewheeldClient`, and `TrialdClient`
+  and `StatemachinedClient` when they come. Not `Rig`: a rig has four daemons
+  on it, and a script that talks to two of them has to be able to say which is
+  which. Not `Client` either, for the same reason at a call site.
+* **A type that will be imported into somebody else's namespace carries its
+  subject.** `ZoneBoundReference`, not `Reference`; `BoardCapacities`, not
+  `Capacities`. `from mousewheeld import Reference` is a name collision waiting
+  for the second import line.
+* **A file is named like a class, not like a folder.** `client.py`, `types.py`
+  and `cli.py` say only where they sit in a convention; `daemon_client.py`,
+  `api_types.py` and `command_line_interface.py` say what is in them. The few
+  fixed names a tool insists on — `__init__.py`, `conftest.py`, `mod.rs` — are
+  the exceptions, and they are exceptions because they are addresses rather
+  than descriptions.
+
+The same rule made `Rig` into `DaemonServices` on the Rust side: it is not a
+rig, it is this daemon's implementation of every service the proto declares.
 
 ## 2. The interface is proto
 
