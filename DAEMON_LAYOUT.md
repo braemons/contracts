@@ -113,6 +113,85 @@ Three rules that follow, and each was learned by getting it wrong:
 The same rule made `Rig` into `DaemonServices` on the Rust side: it is not a
 rig, it is this daemon's implementation of every service the proto declares.
 
+### Two configurations, and they are never the same file
+
+Every daemon in this family has exactly two kinds of configuration, and they
+are unrelated to each other. vstimd has had the distinction written down
+longest; it is the family's, not vstimd's.
+
+| | **the rig config** | **the experiment's documents** |
+|---|---|---|
+| what it describes | this box: the device, the display, the ports, the directories | one experiment: what will actually be run |
+| format | TOML | JSON |
+| where | `/etc/braemons/<daemon>-rig-config.toml` | under `/var/lib/braemons/<daemon>/` |
+| who writes it | whoever set the hardware up, once | whoever is running the study, per session |
+| how often it changes | when the hardware does | between sessions, sometimes between blocks |
+| in the package | a conffile: shipped, and never overwritten on upgrade | nothing — a fresh install has none |
+| over the API | read, and a handful of fields patchable **until restart** — never written back to `/etc` | the store rpcs, as text |
+
+**Both are documents, so neither is protobuf.** That is §2's rule below, and
+this is the largest thing it covers: a rig config and a scene config are files
+somebody edits and reviews in a diff, they keep serde or pydantic and their own
+JSON Schema, and a `.proto` describing them would be a second description that
+loses the day it disagrees.
+
+What each daemon calls its experiment documents follows the work rather than a
+template — a scene is not a zone set is not a graph — but the shape is the
+same: named files, in a store, under the storage directory, reachable by name
+and never by path.
+
+| | rig config | experiment documents |
+|---|---|---|
+| **vstimd** | `vstimd-rig-config.toml` — VTL shm, display mode, thread scheduling | scene configs: `projects/<project>/scene-configs/<name>.config.json` |
+| **mousewheeld** | `mousewheeld-rig-config.toml` — the board, the rates, the shm segment | zone sets: `zone-sets/<name>.json` |
+| **triald** | `triald-rig-config.toml` — the port, the directories, the executor, and `session_config` naming the next column | the session config: the declarative settings and the trial type sets, in one file. Uploaded policies sit beside it |
+| **statemachined** | `statemachined-rig-config.toml` — the device target, the ring, the directories | state-machine configs and graphs |
+
+**Never call either of them `config` on its own.** The word alone is ambiguous
+in every one of these repositories, and the two things it could mean are the
+two least alike: a file about the hardware that changes once a year, and a file
+about an experiment that changes between blocks. A flag, a field, a class or a
+CLI argument says which — `--rig-config`, `--session-config`, `scene_config`,
+`state_machine_config`. vstimd's CLAUDE.md has enforced this for longer than
+this document has existed.
+
+**Addressed by name, never by path.** A daemon takes one storage directory and
+owns the tree under it; a client asks for `corridor`, not
+`/var/lib/braemons/mousewheeld/zone-sets/corridor.json`. A path in a request is
+a path that means something different on the next rig, and it is also how an
+API becomes a way to read `/etc/shadow`.
+
+**A rig config is never written back from the API.** mousewheeld patches
+`rate_hz` and two neighbours, statemachined patches the device target; both
+last until the daemon restarts and neither touches `/etc/braemons`. That file
+belongs to whoever set the box up: an API that rewrote it would make the
+running daemon the authority on what the hardware is, and would silently
+diverge from the conffile the next upgrade compares against.
+
+#### What does not match this yet
+
+Writing it down found four things, three of them the kind this rule exists to
+prevent:
+
+* **statemachined's rig config flag is `--config`.** The other three are
+  `--rig-config`, and bare `config` is the one spelling this rule forbids.
+* **triald's `--config` is the *session* config.** So the same flag name means
+  the box on one daemon and the experiment on another, which is exactly the
+  confusion the rule is about. It wants to be `--session-config`.
+* **mousewheeld's storage directory defaults to `/var/lib/mousewheeld`**, not
+  `/var/lib/braemons/mousewheeld`. triald's unit file already carries the
+  reason in a comment: every braemons daemon keeps its state under one parent,
+  so a rig has one directory to back up.
+* **triald has the flag and not the file.** `--config` and the rig config's
+  `session_config` both exist; `_load_config` raises "not implemented yet", the
+  daemon runs a built-in demo experiment, and a set written over the API lives
+  in memory and does not survive a restart. This is the one gap that is a
+  missing *thing* rather than a misspelt name, and a daemon whose experiment
+  cannot be written down is a daemon whose sessions cannot be reproduced.
+
+None of the three names is load-bearing anywhere yet — nothing is shipped or
+used (§5) — so each is a rename rather than a migration. The fourth is work.
+
 ## 2. The interface is proto
 
 ### Types and behaviours, both
