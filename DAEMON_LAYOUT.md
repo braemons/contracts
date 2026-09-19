@@ -59,6 +59,23 @@ either. The package README is a different document from the repository's — one
 is read after `pip install`, the other on GitHub — so this is not a copy. The
 licence text is.
 
+**`client/web/` has a build step, and its output is committed.** The API is
+gRPC, and a browser cannot make a protobuf client out of nothing: it needs the
+generated types and a gRPC-Web transport, bundled. That is one build step and it
+is allowed — but it runs *before* the daemon builds, never during. A Rust daemon
+embeds `client/web/` at compile time, so a bundle produced by `cargo build`
+would make npm a build dependency of the daemon on every rig and in every
+release; a Python daemon has the same problem one step later, at `uv build`.
+
+So: `client/web/package.json` with a lockfile, one script, `node_modules/` and
+any intermediate generation ignored, and the bundle committed beside the
+hand-written panels with a `@generated` line at the top of it. `make web`
+regenerates; `make check-web` regenerates and fails if the committed bundle is
+not what `proto/` produces — the same arrangement the generated server code is
+already under, for the same reason. Only the client is bundled: the panels stay
+plain ES modules served as written, so editing one and reloading the page still
+works. mousewheeld's `client/web/build.mjs` is the reference.
+
 **`client/` is a sibling of `daemon/`, never a subdirectory of it.** A person who
 wants to talk to a rig should not have to install the thing that runs one.
 statemachined is the cautionary case: its client lives inside the daemon package
