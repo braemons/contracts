@@ -51,7 +51,10 @@ fails on a machine that never saw the repository. The copy belongs in the
 packaging step, which is already copying a staged tree, and the daemon falls
 back to the authored location when no copy has been made — which is every
 editable install, and therefore every developer. triald's
-`packaging/Makefile` and `api/app.py` are the reference.
+`packaging/Makefile` and `find_web_root` in `api/web_edge.py` are the
+reference, and its `check-staged-tree.py` is the other half: the copy drops the
+panels' build inputs by name, and the check asserts from the other side that
+everything left under `web/` is something a browser would ask for.
 
 `daemon/` also needs its own `README.md` and `LICENSE`: PEP 621 metadata may not
 point above the project directory, and a symlink does not survive the sdist
@@ -213,10 +216,44 @@ described it. The file wins, because a person types it.
   planned, starting with mousewheeld's board because it is the only one not yet
   written. Framing and CRC survive either way — protobuf is not self-delimiting.
 
+### One package per daemon, and one for the family
+
+A daemon's proto package is its own name: `triald.v1`, `mousewheeld.v1`,
+`statemachined.v1`, `vstimd.v1`. **There is no family prefix on them**, and
+that is a decision rather than an omission. The package is half of every
+address a person types — `grpcurl … triald.v1.Trial/ReportOutcome` — and a
+`braemons.` in front of it would be earned by a name collision that cannot
+happen on a rig with one of each daemon. Uniqueness against the world is what
+the style guides are protecting, and nothing here is published to a registry
+the world shares.
+
+`braemons.v1` exists for the other case: **a type two daemons must agree on and
+neither is the authority for.** The bar is both halves. Today it holds exactly
+one thing, the `.tdr` outcome taxonomy — statemachined reports an outcome,
+triald records one — which lived in `triald.v1` until the day it was vendored
+into statemachined, where `package triald.v1` would have put a `triald` module
+inside statemachined's generated tree, on rigs where the real one is installed.
+
+A type only *one* daemon owns stays in that daemon's package even when others
+read it. Vendoring a neighbour's proto to read it is normal; moving it to
+`braemons.v1` because two repositories touch it is how a shared package becomes
+a junk drawer.
+
+**A Python daemon rewrites protoc's imports.** protoc roots a generated
+module's imports at the proto path, so the stubs reach each other as `from
+triald.v1 import …` — which is the daemon's own package name, and which no
+`__path__` trick can resolve for a second package like `braemons.v1`. One sed
+in `make proto` rewrites them to absolute paths inside `_proto/`, and
+`check-proto` compares the rewritten output. The `__path__` arrangement vstimd's
+client still uses works, but nothing static can follow it, so a type checker
+silently skips every module that imports through it — including the convert
+seam, which is the one worth checking.
+
 ## 3. Where the proto lives — and why not one repo
 
 Each daemon's `proto/` is in its own repository, and `contracts/vendored/proto/`
-holds a copy of all four for reading side by side.
+holds a copy of all four for reading side by side — plus `braemons/v1/`, which
+is canonical here because it belongs to no one daemon.
 
 This is the `outcomes.json` arrangement, for the same reason: a single shared
 proto repository is a build dependency in every daemon, and "small and optional
