@@ -1,8 +1,8 @@
 # The braemons daemon interactions
 
 > **Status: the shape is settled and half of it is built.** §5.1, §5.2, §8's
-> stage 1 and §9.1 are done — `make test-e2e` in statemachined runs one whole
-> trial across both daemons, with triald driving. §6 is not built, and §3C
+> stage 1 and §9.1 are done — `make e2e-local` here runs one whole trial across
+> both daemons, with triald driving. §6 is not built, and §3C
 > (vstimd) is now an open issue rather than a design here. §3 is a catalogue of
 > what exists today, with the gaps marked — it is meant to be checked against
 > the code, not trusted.
@@ -28,7 +28,7 @@ authority is (§2). vstimd and statemachined know nobody: they publish what they
 observed and command nothing.
 
 So the catalogue could go in triald, and it should not. The things here are not
-triald's. The `.tdr` taxonomy lives in five copies across two repos, one of them
+triald's. The `.tdr` taxonomy is restated in both repos, one of them
 firmware that will never link a Python package, and statemachined needs it to
 compile a graph on a bench with no triald anywhere — putting the canonical copy
 in triald would make every other repo depend on the *decision authority* to know
@@ -65,6 +65,10 @@ Three interactions on the slow bus, and their directions are now settled:
 | **A** | triald → statemachined | **command**, per trial | once per trial |
 | **B** | statemachined ⇢ triald | **broadcast**, subscribed | every event |
 | **C** | vstimd ⇢ triald | **broadcast**, subscribed | every event |
+
+A fourth participant is designed but unbuilt — mousewheeld, the locomotion
+input, with rows **D**, **E** and **F** in §3. It changes nothing about the
+three above, which is the test the rule is meant to pass.
 
 ### The rule the three now follow
 
@@ -252,6 +256,42 @@ Not interactions in the sense above — no request, no reply, no schema to revie
 | `vstimd/vtl/` | the shared-memory layout: 4 input banks, 1 output bank, `u64` each, rise/fall latches, drained once per frame at frame start |
 | `gpiochip-daqd` | VTL ⇄ `/dev/gpiochipN`. Input edges from kernel events, outputs mirrored onto pins |
 | `statemachined/dev/PROTOCOL.md` | USB CDC, NDJSON, CRC, indices-not-names. The daemon ⇄ firmware link |
+| `vstimd/vinput/` | the second shared-memory layout: a seqlock, `f64` axis values and a writer heartbeat, read once per frame. Where a wheel or an eye tracker reaches the camera (§3 D–F) |
+
+### D, E, F — mousewheeld, a fourth participant
+
+**Proposed, not agreed here yet.** The design is `mousewheeld/dev/PLAN.md`;
+these rows are in this catalogue so that a reviewer looking for "how does the
+wheel reach the camera" finds an answer rather than silence. Nothing about the
+daemon is built — but half of F is, on vstimd's side, which is why it is worth
+writing down before the rest is.
+
+mousewheeld reads a running-wheel encoder and publishes how far the animal went.
+It is a **participant** under §2's rule: no `vstimd_address`, no
+`triald_base_url`, no outbound call of any kind.
+
+| | | Direction | Rate |
+|---|---|---|---|
+| **D** | triald → mousewheeld: place a mark, arm a zone set | command | per trial |
+| **E** | mousewheeld ⇢ triald: the path since a mark, zone hits | read / subscribed | per trial, or every event |
+| **F** | mousewheeld ⇢ vstimd: `vinput` shared memory | **fast bus** | every sample |
+
+**F is not an interaction in this catalogue's sense, and must never become
+one.** vstimd needs the position *inside* the frame it is drawing: shared memory
+costs <1 µs with <1 µs of jitter, where ZMQ PUB on localhost costs 20–80 µs with
+spikes past 200 µs — which at 240 Hz is a randomly dropped frame
+(`vstimd/dev/INPUT_LATENCY.md` §2). So the producer writes a segment whose
+layout vstimd defines, vstimd names a device in its rig config and never learns
+who writes it, and neither has a client of the other. Exactly the arrangement
+`gpiochip-daqd` and VTL already have. A camera on another host is served by a
+relay process that subscribes and writes local shm, not by teaching vstimd to
+subscribe.
+
+**Zone TTLs do not appear above, deliberately.** "The animal has run 200 cm" is
+decided on the device, in the scan that sees the count, and leaves as a TTL edge
+into statemachined and daqd — the fast bus, like stimulus onset. Routing an
+outcome that must be *timed* through the slow bus is the mistake §2's last
+paragraph exists to prevent. triald records the hit afterwards, over E.
 
 ## 4. What is built
 
@@ -274,6 +314,9 @@ Not interactions in the sense above — no request, no reply, no schema to revie
 | a client subscribes to the stream | `vstimd.events` (vstimd-client) | ✅ |
 | triald wires the two together | — | ❌ the last gap |
 | readiness gate `configure→ready→start` | designed, `triald/dev/PLAN.md` | ❌ not built |
+| **F** vstimd reads a position device | `vstimd/vinput/`, `input/devices.rs`, `[[input.device]]`, `LinearNav3D` | ✅ `0.3`, consumer half |
+| **F** anything writes one | — | ❌ no producer exists |
+| **D**, **E** mousewheeld itself | `mousewheeld/dev/PLAN.md` | ❌ a plan, M0–M7 all open |
 
 ## 5. Three defects, all in interaction B
 
@@ -364,7 +407,7 @@ message**, which is the whole reason §7 says no to a proto repo.
 
 | Fact | Today |
 |---|---|
-| the `.tdr` outcome codes | ✅ five copies, held to `outcomes.json` by a vendored checker |
+| the `.tdr` outcome codes | ✅ **a protobuf enum**, `braemons/v1/trial_outcome.proto`, canonical here and vendored into both daemons |
 | rig identity — a `rig=` TXT record salted `braemons:` | designed in `console/docs/PLAN.md` §4, built nowhere |
 | mDNS TXT keys — `id` `version` `api` `elements` `device` `port` | statemachined publishes all six; vstimd publishes `id` only, pointing at the ZMQ port |
 | VTL bit and line semantics | already a proper in-repo contract in `vstimd/vtl/` — leave it there |
@@ -374,8 +417,8 @@ The first three become files here:
 ```
 contracts/
 ├── INTERACTIONS.md            this document
-├── outcomes.json              ✅ the (name, value) pairs — the source of truth
-├── check_outcomes.py          ✅ vendored into each repo; reads its sources
+├── DAEMON_LAYOUT.md           ✅ the shape every repo takes, and where proto lives
+├── vendored/proto/            ✅ every daemon's proto/, plus braemons/v1/ — canonical
 ├── check_vendored_copies.py   ✅ are the copies still this one? --fix syncs them
 └── mdns.md                    the TXT keys, and the rig= salt
 ```
@@ -384,16 +427,25 @@ contracts/
 wrong.** These tables are four fifths prose, and the prose is the part with
 value: *why* code 8 is spelled correctly, why two codes may not be declared, who
 may assign `NEVER_FINISHED`. Generating them deletes exactly that, or forces it
-into a JSON field nobody reads in context. So the copies stay hand-written where
-a person will read them, and `check_outcomes.py` makes them one table. It also
-means no build step, no generated files and no "do not edit" headers — a
-strictly smaller thing than what §6 originally proposed.
+into a field nobody reads in context. So the copies stay hand-written where a
+person will read them, and each repo's `check-proto` makes them one table. A
+protobuf enum keeps that property: the prose is comments beside the values,
+which is where it was always going.
 
-**Each repo vendors both files and tests its own copies against them**, offline,
-in its own CI: `triald/tests/contracts/` and
-`statemachined/python/tests/contracts/`. There is already precedent in the tree
-— `statemachined/python/tests/unit/wire_vectors.json` is vendored golden data
-doing the same job.
+**Each repo vendors the taxonomy and tests its own copies against it**, offline,
+in its own CI — `triald/tools/check_outcomes.py` and
+`statemachined/tools/check_outcomes.py`, each reading its own sources against
+its own vendored `braemons/v1/trial_outcome.proto`. `check_vendored_copies.py`
+here answers the other direction, which can only be answered here: are those
+copies still this one?
+
+**Three facts the JSON carried did not come with it**, and their absence is the
+point. It said which outcomes are `declarable`, `accepted_by_default` and
+`countable`; each is used by exactly one daemon, so a shared file holding them
+was a shared file holding one-daemon facts. `declarable` lives in
+statemachined's `NOT_DECLARABLE`, the other two in triald's `Acceptance`
+message and its counters panel, and each repo's checker holds its own copies to
+its own rule.
 
 **Nothing checks a repo's copy against this one automatically, on purpose.** A
 repo reaching for the canonical file would be a build dependency wearing a
@@ -408,12 +460,48 @@ this repo is not optional any more, and every daemon being independently
 buildable is the property the whole architecture is arranged around. A vendored
 file plus a CI check gets the drift caught without the build dependency.
 
-**Why a data file rather than protobuf, specifically.** The firmware holds one
-of the five copies. The RA4M1 has 32 KB of SRAM with ~11 KB unclaimed, and
-`PROTOCOL.md` §6 deliberately puts *no names* on that wire — states, lines and
-distributions are integer indices — to avoid spending it. It will never link
-protobuf. A `.proto` file would therefore exclude the copy that is hardest to
-fix; `check_outcomes.py` reads the `enum class` directly and covers it.
+### Why a data file rather than protobuf — and why that argument failed
+
+This section used to end here, with the firmware as the decisive objection: it
+holds one of the copies, the RA4M1 has 32 KB of SRAM with ~11 KB unclaimed, it
+will never link protobuf, and a `.proto` would therefore exclude the copy that
+is hardest to fix.
+
+**The argument does not survive, and the mistake in it is worth keeping.** The
+firmware never needed to *link* anything. Only the checker needed to read the
+taxonomy, and a checker reads text — it read `enum class` out of C++ with a
+regex while holding it to a JSON file, and it reads an `enum` out of a `.proto`
+with a regex just as easily. "The firmware cannot consume protobuf" is true and
+was never the question; the question was what the *checker* consumes.
+
+So the taxonomy is now a protobuf enum, `braemons/v1/trial_outcome.proto`,
+canonical in this repository's `vendored/proto/` and vendored into both daemons
+byte-identically. It is the thing `outcomes.json` was imitating: numbers that
+are never reused, names that are a wire contract, and a format that a client
+generates from rather than parses.
+
+**`braemons.v1`, and not either daemon's package, because neither owns it.**
+statemachined reports an outcome and triald records one; a package named after
+one of the two would make the other import its neighbour's interface to say
+what a trial did. It is the only thing in `braemons.v1`, and the bar for a
+second is the same: a type two daemons must agree on and neither is the
+authority for. It lived in `triald.v1` for one release cycle, which was long
+enough to show the problem — vendored into statemachined, `package triald.v1`
+would have put a `triald` module inside statemachined's generated tree, on rigs
+where the real `triald` is installed.
+
+**What the prose argument above got right survives.** These tables are four
+fifths prose and the prose is the part with value; it moved into the enum's
+comments, where a generated client carries it too. What did *not* survive is the
+claim that a `.proto` would cost the firmware its copy: the firmware keeps a
+hand-written C++ enum, and `statemachined/tools/check_outcomes.py` holds it to
+the proto by reading both as text.
+
+Three facts the JSON carried are not in the enum — whether a graph may declare
+an outcome, whether it is accepted by default, and who assigns it. Each is used
+by exactly one daemon, so each lives where it is used, and each is held to the
+enum by that daemon's own checker. §5.2's defect was a *name and number*
+disagreement, which is exactly what an enum covers.
 
 For the `rig=` record, note that `console/docs/PLAN.md` §4 already reaches the
 same conclusion by a different route — its preferred fix is *"a few lines in
@@ -439,6 +527,9 @@ wrong about the remedy. Recorded here so it is not re-proposed.
 - **The schemas cannot be authored in proto today.** triald's and
   statemachined's OpenAPI is *generated from* FastAPI/Pydantic. Inverting that
   means rewriting both APIs around generated types to fix one missing field.
+  *(Since decided: that inversion is worth it for its own sake, and is planned
+  per repository rather than as one shared repo — see
+  [`DAEMON_LAYOUT.md`](DAEMON_LAYOUT.md).)*
 - **The firmware cannot consume it.** §6.
 
 **What replaces it for reviewability is this document plus §8's conformance
@@ -457,6 +548,87 @@ not a design"* — and the transcription is where §5.1's bug is. So:
 - **Later, optional:** generate the client model with `datamodel-code-generator`
   and commit the output. Stronger, but it is a build step in repos with a
   no-build-step culture, and the test above catches the same class of bug.
+
+### The narrower question that kept coming back: gRPC ✅ **decided — yes, for control planes**
+
+Asked when mousewheeld's HTTP API went in, and answered *no* at the time. The
+answer has changed, and the reasoning below is kept because the way it changed
+is the useful part: not one argument refuted, but **every premise it rested on
+altered by a later decision.**
+
+What the table said, and what happened to each row:
+
+| Consumer | The objection | What changed |
+|---|---|---|
+| **MATLAB** | `webread` is built in; gRPC has nothing native | deprioritised explicitly. MATLAB reaches a rig through the Python client. |
+| **A console panel** | generated stubs mean a build step, in repos whose element contract exists to avoid one | **the web UI may have a build step now.** That contract was about a *console* not needing one, and a generated client served by the daemon satisfies it. |
+| **triald** | a second client style in a Python codebase that has one | triald's own API is being generated too, so there is one style either way |
+| **A rig at 3 a.m.** | `curl /api/state`; `grpcurl` is not installed | **traded deliberately.** Each daemon has a client library and a CLI, and those are the supported way in. |
+
+And one objection that was simply wrong rather than outdated: *gRPC needs a
+proxy for browsers*. `tonic-web` translates gRPC-Web in process. There is no
+Envoy, no second daemon, and no second port — the spike serves the panels, the
+REST API, gRPC, gRPC-Web and reflection from one listener.
+
+**And the positive case, which is stronger than any of the above: these
+daemons do not do CRUD.** REST is a good fit for a resource graph, and a rig's
+control plane is not one. A trial loop is a sequence of *commands* — arm,
+select, report, cancel — and so is arming a zone set, taking a calibration
+measurement, or stepping a simulator. The URLs said so all along: **10 of
+mousewheeld's 24 routes and 17 of triald's 31 end in a verb**, because there
+was no noun to name.
+
+    POST /api/calibration/measure/finish
+    POST /api/config/reset-counters
+    POST /api/session/recording/pause
+
+Those are rpcs written in a notation for resources. `Calibration.FinishMeasuring`
+is what they meant. The remaining routes that *are* nouns — a zone-set store, a
+trial-type store, a config — are a small minority, and reading a stored document
+is an rpc that happens to be idempotent.
+
+**What tipped it was noticing what was being built instead.** By the time
+mousewheeld and triald had their interfaces in proto, the family had also
+acquired `braemons.v1.route` (an option binding each rpc to an HTTP path),
+`check_routes.py` in two repos (holding routers and rpcs to each other),
+`/api/proto` (an endpoint announcing the interface), pinned JSON-mapping
+settings with a test file each, hand-rolled WebSocket envelopes, and a
+bespoke error-to-status mapping. Every one of those is a reimplementation of
+something gRPC ships, each individually justified, and the pattern is the
+argument.
+
+Measured on the spike (`mousewheeld`, branch `spike/grpc`):
+
+- reflection lists all five services and every rpc, with argument and return
+  types and which are streaming, to a client that has never seen the `.proto`.
+  That is what `/api/proto` was imitating.
+- a server stream is an associated type on a generated trait, not a hand-written
+  loop; three frames were read off `WatchWire` by a client built only from what
+  reflection said.
+- an rpc with no implementation is a compile error, which is the job
+  `check_routes.py` was doing by reading source code.
+- the prose in the `.proto` arrives as documentation on the generated methods.
+
+Costs, also measured: the release binary grows 115 MB → 142 MB with debug
+symbols; `grpcio` has manylinux **aarch64** wheels, so a Python daemon's
+vendored interpreter takes it the way it takes fastapi. The one new thing in
+the packaging pipeline is a build step for the web UI.
+
+**So: control planes become gRPC — statemachined, triald and mousewheeld.**
+What does *not* change:
+
+- **vstimd stays ZMQ.** It is time-critical, its clients decode a high-rate
+  stream, and nothing about gRPC helps there. §7's first table is still right
+  about it.
+- the fast bus — `vinput`, `vtl` — is shared memory and is not an RPC at all.
+- the device wire stays NDJSON + CRC to the board.
+
+Two findings from the spike worth carrying into the work:
+
+- an rpc named `Connect` collides with the generated client's own
+  `connect(dst)` constructor, so `Device.Connect` needs a different name.
+- reflection is a *bidirectional* streaming rpc and gRPC-Web cannot do bidi, so
+  a browser cannot use reflection. A client library can.
 
 ### And the same move in the other direction ✅ **done**
 
@@ -504,9 +676,10 @@ triald is a pip-installable FastAPI app, so it mounts **in-process** via
 
 ### Stage 1 — one whole trial, two daemons ✅ **built**
 
-`python/tests/integration/test_a_whole_trial_with_triald.py`, eight tests, plus
+[`e2e-tests/tests/test_the_handover_to_triald.py`](e2e-tests/tests/test_the_handover_to_triald.py),
+ten tests, plus statemachined's own
 `python/tests/unit/test_the_outcome_report_matches_trialds_schema.py` for the
-schema half with no device. `make test-e2e`.
+schema half with no device. `make e2e-local`.
 
 1. arm a triald session, `POST /api/trial/next`
 2. `POST /api/trial/configure` on statemachined with that `trial_id` and a graph
@@ -530,10 +703,14 @@ async-only and this call is synchronous. Starlette's `TestClient` *is* an
 the request and the test hands it one. Same in-process mount, no subprocess, no
 port, no teardown race, public API only.
 
-**The dependency is its own group** (`e2e`), not part of `test`: triald is a
-private repo, and `make test-daemon` on a fresh checkout must not fail for want
-of credentials to another repo. Without it both files skip themselves and say
-why. CI runs `make test-e2e` as a separate job gated on a deploy key.
+**It used to live in statemachined**, and moving it here is the whole argument
+of `e2e-tests/README.md` reaching its last case. Testing the handover from inside one
+of the two daemons meant that daemon installing the other: a dependency group,
+a lockfile pin on triald's main branch, and a CI job fetching another repo. When
+triald began depending on `statemachined` for the client it had stopped
+hand-copying, the two pins closed a cycle uv cannot resolve — so the lock could
+not be refreshed, and the suite ran for weeks against a triald commit whose bugs
+were already fixed. A test about two daemons belongs to neither.
 
 **A probe that it is not vacuous:** renaming `trial_id` in `triald_client.py`
 fails 7 of the 8 — which is exactly §5.1 reproduced.
@@ -632,8 +809,9 @@ starts to earn itself**, and not before.
    terminal state declaring "nobody heard from me" is a contradiction.
 
    **The rule this leaves:** extending the taxonomy is fine; renumbering never
-   is; and a new name must land in all five copies at once, because outcomes
-   cross the wire *by name*.
+   is; and a new name must land in the enum and every copy of it at once,
+   because outcomes cross the wire *by name*. Each repo's `check-proto` is what
+   makes "at once" a failing build rather than a hope.
 
    *(The original text, for the reasoning:)* **the one thing the broadcast model
    needs that is not built.** `Session.next_trial()` sets `_current` and nothing
@@ -659,10 +837,10 @@ starts to earn itself**, and not before.
 | 3 | ~~The OpenAPI conformance test in statemachined (§7)~~ **done** | — |
 | 4 | ~~**Stage 1 e2e**~~ **done** | — |
 | 5 | ~~Answer §9.2; a `graph` on the trial type; triald's outbound client~~ **done** | — |
-| 6 | ~~**Stage 2 e2e** — triald initiates~~ **done** (10 tests, `make test-e2e`) | — |
+| 6 | ~~**Stage 2 e2e** — triald initiates~~ **done** (10 tests, [`e2e-tests/`](e2e-tests/README.md), moved here out of statemachined) | — |
 | 7 | `mdns.md`; `rig=` in both daemons; vstimd's TXT records and web port | — |
 | 8 | ~~§3C: vstimd's event stream; the client subscriber; triald's join~~ **done** — `triald.api.stimulus_subscriber` closes it | — |
-| 9 | ~~**Stage 3 e2e**, and decide whether `rig-integration` exists~~ **done** — it does not: it is [`rig/`](rig/README.md), here | — |
+| 9 | ~~**Stage 3 e2e**, and decide whether `rig-integration` exists~~ **done** — it does not: it is [`e2e-tests/`](e2e-tests/README.md), here | — |
 | 10 | ~~**§9.7: a deadline on the trial in flight in triald**~~ **done** — `NEVER_FINISHED = 11` | — |
 
 **Interactions A, B and C are done, and the model closes.** triald commands its
@@ -677,14 +855,14 @@ without being told.
 
 ### Where the stage-3 tests live, and why not a fourth repo
 
-They are in [`rig/`](rig/README.md), in this repository, and that is a change of
+They are in [`e2e-tests/`](e2e-tests/README.md), in this repository, and that is a change of
 plan worth writing down rather than quietly doing.
 
 The plan asked whether a `rig-integration` repo should exist. It should not,
 because it would be *this* repo with a different name. The two things do the same
 job at different distances: `INTERACTIONS.md` says what the daemons promise each
-other and `check_outcomes.py` proves each repo's sources still say it, statically
-and offline; `rig/` starts all three and watches them keep the promise. A
+other and each repo's `make check-proto` proves its sources still say it,
+statically and offline; `e2e-tests/` starts all three and watches them keep the promise. A
 contract nobody checks is a wish; a suite of assertions with no written contract
 is something nobody can argue with.
 
@@ -692,8 +870,145 @@ They also fail differently, which is the practical reason to keep both. A rename
 outcome breaks the checker in every repo in seconds, with no daemon running. A
 frame counter that quietly drifted from another frame counter passes every static
 check anybody could write, and only three real processes on one machine will say
-so — which is exactly what `rig/` caught first (§3C).
+so — which is exactly what `e2e-tests/` caught first (§3C).
 
-The rule in the README still holds: nothing installs this repository. `rig/`
-installs all three daemons and can only do that because nothing installs `rig/`.
+The rule in the README still holds: nothing installs this repository. `e2e-tests/`
+installs all three daemons and can only do that because nothing installs `e2e-tests/`.
 It is downstream of everything and upstream of nothing.
+
+## 11. Versioning, and what is promised from 1.0
+
+> **Status: nothing below is promised yet.** Every daemon here is pre-1.0, and
+> until each reaches it these rules describe *how* interfaces are meant to
+> evolve rather than what anybody may rely on. Breaking changes are allowed now,
+> and are being made — `answers` replaced a doubled `message_id` in
+> mousewheeld's wire protocol the week this was written, and vstimd's
+> `[[input.device.axis]] scale` changed meaning in `0.3`. **From 1.0 onward the
+> rules in *The promise* are binding**, and a change that breaks one of them is
+> a major version.
+>
+> The point of writing them down now is that they are cheap to follow while
+> everything is still moving, and expensive to retrofit afterwards.
+
+### The question is not "should we version" but "what happens when the two sides disagree"
+
+That has three different answers on a braemons rig, and they must not share a
+mechanism.
+
+| | Who is on the other end | On a mismatch | How it is versioned |
+|---|---|---|---|
+| **Shared memory** (`vtl`, `vinput`) | another process on the same host, mapping the same bytes | **refuse to map** | a magic and an integer version *inside the segment*, checked at open |
+| **A device wire** (statemachined ⇄ firmware, mousewheeld ⇄ firmware) | firmware that is flashed separately and will be older | refuse **below a floor**, tolerate above it | `protocol_version` in `hello`/`hello_ack`, plus additive evolution |
+| **Daemon to daemon** (HTTP, ZMQ, protobuf) | another daemon, upgraded on its own schedule | **carry on** | advertised, never gated |
+
+**Shared memory is the strict one, and it is the only strict one.** A mismatched
+`#[repr(C)]` struct is not a missing field: it is bytes reinterpreted, a wheel
+reading as an eye tracker with entirely plausible numbers. Both crates already
+refuse to map a segment whose magic or version does not match, and that check is
+what makes it safe for a producer in another repository to pin the crate at a
+tag: the pin is a promise, the magic is the proof.
+
+**A version gate between daemons is a mistake.** It converts every upgrade into
+a coordinated one, on a rig whose whole arrangement (§2) is that each daemon
+runs alone and commands nobody. statemachined must come up and work with no
+triald on the network, and with a triald three versions newer.
+
+### The rule: requests refuse unknown fields, responses ignore them
+
+This is the asymmetry everything else follows from, and it is not a compromise
+between strict and lax — the two directions genuinely differ.
+
+- **A request is a command from software that believes it said something.** If
+  triald sends `{zone_set, patch, origin, hysteresis_override}` and the daemon
+  silently drops the field it does not know, the trial runs with a zone nobody
+  asked for. Doing *part* of what was asked is worse than doing none of it, so
+  an unknown field in a request is refused, by name.
+- **A response, a broadcast or a record must survive a newer producer**, or
+  every upgrade is a flag day. A consumer ignores what it does not recognise.
+
+**Where it can be enforced, it is; on the binary wire it cannot be, and saying
+otherwise is worse than admitting it.** This rule was written when the
+interfaces were HTTP and JSON, where `deny_unknown_fields` is one setting on an
+input type. protobuf's parsers *keep* unknown fields rather than refusing them —
+that is how proto3 achieves the forward compatibility the second half of this
+asymmetry depends on — and no daemon in this family can opt out. Concretely:
+
+| Path | Refuses an unknown field? |
+|---|---|
+| a browser, over JSON — `fromJson`, `json_format.Parse(…, ignore_unknown_fields=False)` | **yes**, by name, before a handler sees it |
+| a generated client, over the binary wire | **no**, and cannot |
+
+So the rule stands as a rule *for clients*, and the daemon enforces it where the
+parser lets it. What carries the weight instead is the thing that made the rule
+necessary: a field is never renumbered or given a new meaning (§11, promise 1),
+so a field an old daemon does not know is a field that did not exist, and
+ignoring it costs a command that was never going to work rather than a command
+half-done under a name that now means something else.
+
+An unknown enum value is decoded as its `UNSPECIFIED` variant rather than
+refused (vstimd's `Enum::try_from(v).unwrap_or(Unspecified)` is the shape).
+
+The consequence is worth stating plainly, because it is the half people forget:
+**a client must not send a field the daemon does not know.** If a client needs a
+field that may not be there, it asks what it is talking to first — and must not
+expect to be told off for guessing wrong.
+
+### So are we forward compatible?
+
+Not yet, and the words are worth separating.
+
+| | Means | State |
+|---|---|---|
+| **Backward compatible** | new code reads old data; a new daemon serves an old client | mostly, by additive habit; not promised |
+| **Forward compatible** | old code tolerates new data; an old consumer survives a newer producer | **for responses, broadcasts and records** — this is what proto3 and ignore-unknown buy |
+| Forward compatible *requests* | an old daemon tolerates a newer client's command | **not promised, and not designed for** — see the rule above. On the binary wire an old daemon will in fact ignore a field it does not know, which is a parser's behaviour rather than a guarantee to build on |
+
+### The promise, from 1.0
+
+Within a major version, for every interface in §3 and the fast bus beside it:
+
+1. **Additive only.** Fields, message types, routes and enum values may be
+   added. Nothing is removed, renamed, renumbered or given a new meaning.
+   A protobuf field number is never reused, ever, including across majors.
+2. **Responses, broadcasts and records stay readable by older consumers.** A
+   consumer that ignores what it does not recognise keeps working.
+3. **Requests refuse unknown fields wherever the parser allows it**, which is
+   every JSON path and no binary one. A client that needs a new field checks the
+   version first rather than relying on being refused; that is what the version
+   advertisement is for.
+4. **A shared-memory layout change bumps the version in the segment** and is a
+   coordinated upgrade of both packages by definition — the reader refuses the
+   writer until both are replaced. It is therefore a major event even when the
+   daemon's own version is not.
+5. **A device wire keeps a floor**: a daemon states the oldest `protocol_version`
+   it speaks and refuses below it, by name, rather than talking to firmware it
+   half-understands.
+6. **Defaults are part of the interface.** A field whose default changes is a
+   field whose meaning changed.
+
+### Where a version is stated
+
+A console showing three daemons' panels needs to know what it is showing, and
+the daemons cannot agree on a transport: statemachined, triald and mousewheeld
+speak HTTP+JSON, and vstimd's control surface is protobuf over a WebSocket. So
+the uniform place is the one they already share — **the mDNS TXT record**, which
+carries `id`, `version`, `api`, `elements`, `device` and `port` today.
+
+- `version` — the daemon's own release.
+- `api` — the interface contract's major version, which is what a client cares
+  about and is not the same number.
+- `proto` — for a daemon that owns firmware, the device `protocol_version` range
+  it speaks.
+
+Each daemon also answers in its own surface, in its own shape: vstimd in
+`QueryServerInfo`, the others on a route. **Do not force a common transport for
+this**; forcing a REST endpoint onto vstimd to satisfy a table would be the
+wrong end of the stick.
+
+### What is not versioned
+
+**The shared vocabulary of §6.** The `.tdr` outcome taxonomy lives in one
+protobuf enum and a handful of copies across two repositories, one of them
+firmware, and they must be *identical* — a version number would only make being
+legitimately out of step expressible. The check for that is each repo's
+`check-proto` in CI: a test, not a number on a wire.

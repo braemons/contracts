@@ -30,6 +30,7 @@ worse than no suite, because it would be green.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import pathlib
 import shutil
@@ -40,8 +41,7 @@ import tomllib
 
 import pytest
 
-#: The rig half of the contracts repo — `rig/`, not the repo root.
-#: The rig half of the contracts repo — `rig/`, not the repo root.
+#: The end-to-end half of the contracts repo — `e2e-tests/`, not the repo root.
 REPO = pathlib.Path(__file__).resolve().parents[1]
 
 #: The port a vstimd publishes events on, when one is already running.
@@ -107,7 +107,7 @@ def pytest_configure(config: pytest.Config) -> None:
 def pytest_collection_modifyitems(config: pytest.Config, items: list) -> None:
     if config.getoption("--hardware"):
         return
-    skip = pytest.mark.skip(reason="needs --hardware and a wired rig; see rig/WIRING.md")
+    skip = pytest.mark.skip(reason="needs --hardware and a wired rig; see e2e-tests/WIRING.md")
     for item in items:
         if "wiring" in item.keywords or "manual" in item.keywords:
             item.add_marker(skip)
@@ -205,30 +205,6 @@ def vstimd_binary(pins: dict) -> pathlib.Path:
         "nothing named vstimd is on PATH, and VSTIMD_BINARY is unset. "
         "vstimd 0.2 is not released yet — see README.md, 'The bootstrap gap'. "
         "For now: VSTIMD_BINARY=/path/to/vstimd/target/release/vstimd"
-    )
-
-
-@pytest.fixture(scope="session")
-def statemachined_device(pins: dict) -> pathlib.Path:
-    """The firmware's own session and engine, built for this host.
-
-    Not a mock and not a simulator: it is the same C++ the MCU runs, compiled
-    for x86, which is what makes a test of the daemon a test of the device's
-    parser, validator and scan loop rather than of a stand-in for them.
-    """
-    override = os.environ.get("STATEMACHINED_DEVICE")
-    if override:
-        path = pathlib.Path(override)
-        if not path.exists():
-            pytest.fail(f"STATEMACHINED_DEVICE is set to {path}, which does not exist")
-        return path
-    released = _released_artifact("statemachined", pins)
-    if released is not None:
-        return released
-    pytest.skip(
-        "no statemachined native device: it is not published as a release asset "
-        "yet — see README.md, 'The bootstrap gap'. For now, build it in the "
-        "statemachined repo and set STATEMACHINED_DEVICE"
     )
 
 
@@ -406,66 +382,13 @@ def restartable_display(vstimd_binary: pathlib.Path, tmp_path_factory):
         display.close()
 
 
-@pytest.fixture(scope="session")
-def statemachined_bench(statemachined_device: pathlib.Path):
-    """statemachined's own socket bridge for the native device.
-
-    **Imported, never reimplemented.** statemachined's conftest says why: "two
-    bridges that drift are two different devices". So this reaches for that one
-    rather than writing a second.
-
-    It used to have to reach into a checkout by path, because the bridge lived
-    in `daemon/bench/` and was not in any distribution -- the bootstrap gap the
-    README described. statemachined ships it now, as
-    `statemachined.device.native_device_on_a_socket`, so the first thing tried
-    is an ordinary import: an installed daemon has it, and so does anything with
-    the wheel. The path fallbacks stay for a checkout that is not installed.
-    """
-    import sys
-
-    try:
-        from statemachined.device import native_device_on_a_socket
-
-        return native_device_on_a_socket
-    except ImportError:
-        pass
-
-    # A checkout, not installed. STATEMACHINED_SRC first because somebody who
-    # said where it is has already answered the question.
-    source = os.environ.get("STATEMACHINED_SRC")
-    candidates = [pathlib.Path(source) / "daemon" / "src"] if source else []
-    # Next to the device binary is where a release asset would unpack it.
-    candidates.append(statemachined_device.parent / "src")
-    for directory in candidates:
-        if (directory / "statemachined" / "device" / "native_device_on_a_socket.py").exists():
-            sys.path.insert(0, str(directory))
-            from statemachined.device import native_device_on_a_socket
-
-            return native_device_on_a_socket
-    pytest.skip(
-        "statemachined's socket bridge was not found. Install the daemon "
-        "(`apt install braemons-statemachined`, or pip-install its wheel), or "
-        "set STATEMACHINED_SRC to a checkout"
-    )
-
-
 #: The rig these tests assume, as a state-machine config.
 #:
 #: **This is the wiring, written down.** `WIRING.md` says which physical pin each
 #: of these names is, and the acceptance tests are only meaningful if the two
 #: agree — a `lever` on line 4 here and a button soldered to line 5 there is a
 #: test that fails for a reason having nothing to do with any daemon.
-LINE_MAP = {
-    "input_lines": [
-        {"name": "start_switch", "line_index": 0},
-        {"name": "lever", "line_index": 4},
-    ],
-    "output_lines": [
-        {"name": "ready_lamp", "line_index": 0},
-        {"name": "reward_valve", "line_index": 3, "safe_level_is_high": True},
-        {"name": "stimulus_gate", "line_index": 1},
-    ],
-}
+LINE_MAP = json.loads((pathlib.Path(__file__).parent / "line_map.json").read_text())
 
 
 class Executor:
@@ -577,18 +500,21 @@ def executor(request: pytest.FixtureRequest, tmp_path):
     yield from _spawned_executor(request, tmp_path)
 
 
-def _spawned_executor(request: pytest.FixtureRequest, tmp_path):
+def _spawned_executor(request: pytest.FixtureRequest, tmp_path, *, native: bool = False):
+    """A statemachined of this test's own, in front of a device of its own.
+
+    `native` forces the firmware compiled for this host even on `--hardware`,
+    for a test that is about the daemons' handover rather than about wires and
+    must not share a board -- see `test_the_handover_to_triald.py`.
+    """
     import httpx
 
-    on_hardware = request.config.getoption("--hardware")
+    on_hardware = request.config.getoption("--hardware") and not native
     if on_hardware:
         device_target = request.config.getoption("--target")
         device = None
     else:
-        device = request.getfixturevalue("statemachined_bench").NativeDeviceOnASocket(
-            store_path=str(tmp_path / "store.bin")
-        )
-        device.start()
+        device = _native_device(tmp_path)
         device_target = device.target_url
 
     port = distinct_ports(1)[0]
@@ -625,7 +551,7 @@ def _spawned_executor(request: pytest.FixtureRequest, tmp_path):
             _stop(proc)
             pytest.fail(f"statemachined never answered:\n{log.read_text()}")
 
-        if on_hardware and client.get("/api/device").json().get("state") in (None, "absent"):
+        if on_hardware and not client.get("/api/device").json().get("connected"):
             _stop(proc)
             pytest.skip(f"no board answering on {device_target}")
 
@@ -637,6 +563,62 @@ def _spawned_executor(request: pytest.FixtureRequest, tmp_path):
         _stop(proc)
     if device is not None:
         device.stop()
+
+
+class _PackagedNativeDevice:
+    """`statemachined device`, the packaged command, on a port of its own.
+
+    What a box that installed the `.deb` has: the same bridge and the same
+    firmware compiled for the host that `container/entrypoint.sh` starts for the
+    shared daemon, started again here for a test that needs a device nobody
+    else has touched.
+    """
+
+    def __init__(self, tmp_path: pathlib.Path) -> None:
+        self.port = distinct_ports(1)[0]
+        self.target_url = f"socket://127.0.0.1:{self.port}"
+        self._log = tmp_path / "device.log"
+        self._sink = self._log.open("w")
+        self._proc = subprocess.Popen(
+            [_statemachined_command(), "device", "--port", str(self.port)],
+            stdout=self._sink,
+            stderr=subprocess.STDOUT,
+            cwd=tmp_path,
+            env={**os.environ, "STATEMACHINED_STORE": str(tmp_path / "store.bin")},
+        )
+
+        def listening() -> bool:
+            if self._proc.poll() is not None:
+                pytest.fail(f"statemachined device exited at once:\n{self._log.read_text()}")
+            with contextlib.suppress(OSError), socket.create_connection(
+                ("127.0.0.1", self.port), timeout=0.5
+            ):
+                return True
+            return False
+
+        if not wait_until(listening, timeout_s=15.0):
+            self.stop()
+            pytest.fail(f"statemachined device never listened:\n{self._log.read_text()}")
+
+    def stop(self) -> None:
+        _stop(self._proc)
+        self._sink.close()
+
+
+def _native_device(tmp_path: pathlib.Path):
+    """The firmware compiled for this host, on a socket: imported if it can be.
+
+    statemachined's own bridge in this process when its package is importable
+    (a checkout, `make test-local`); otherwise the installed command, which is
+    what the container has -- the daemon's venv is its own, not this suite's.
+    """
+    try:
+        from statemachined.device.native_device_on_a_socket import NativeDeviceOnASocket
+    except ImportError:
+        return _PackagedNativeDevice(tmp_path)
+    device = NativeDeviceOnASocket(store_path=str(tmp_path / "store.bin"))
+    device.start()
+    return device
 
 
 def _stop(proc: subprocess.Popen) -> None:
@@ -668,21 +650,46 @@ def _statemachined_command() -> str:
             return found
     pytest.skip(
         "no statemachined on PATH: install it (`pip install statemachined`, or the "
-        ".deb) — see rig/README.md, 'The bootstrap gap'"
+        ".deb) — see e2e-tests/README.md, 'The bootstrap gap'"
     )
 
 
 def _leave_the_device_idle(client, target: str) -> None:
     """A board is one object shared by every test, unlike a fresh native device.
 
-    It refuses a graph upload while a trial is running, so one test that walks
-    away mid-trial fails the next several with an error about something else
-    entirely. Local runs get a new device per test and need none of this.
+    It refuses a graph upload while a trial is armed or running, so one test that
+    walks away mid-trial fails the next several with an error about something
+    else entirely. Local runs get a new device per test and need none of this.
+
+    **A cancel names the trial it is cancelling.** `POST /api/trial/cancel` takes
+    a `trial_id` and forbids anything else in the body, so the `{"reason": ...}`
+    this used to send was a 422 the daemon never acted on -- a teardown that had
+    never once returned a device to idle, invisible because nothing had yet run
+    after the one test that leaves a trial in flight. The id comes from the
+    daemon rather than from the caller: whatever is actually armed is what has
+    to be cancelled, and the test that armed it may be the one that failed.
     """
     try:
-        client.post("/api/trial/cancel", json={"reason": "test teardown"})
+        state = client.get("/api/state")
+        if state.status_code != 200:
+            return
+        frame = state.json()
+        # The daemon's own definition of busy — `running`, or a link state of 2,
+        # which is armed but not yet started.
+        client.post("/api/trial/cancel", json={"trial_id": frame.get("trial_id") or 0})
+        # Cancelling is a round trip to the device; the next test's upload is
+        # refused if it arrives first.
+        wait_until(lambda: not _is_busy(client), timeout_s=5.0)
     except Exception as error:  # the run must not end because teardown was untidy
         print(f"\ncould not return {target} to idle: {error}")
+
+
+def _is_busy(client) -> bool:
+    frame = client.get("/api/state")
+    if frame.status_code != 200:
+        return False
+    body = frame.json()
+    return bool(body.get("running") or body.get("link_state") == 2)
 
 
 # ── The operator ──────────────────────────────────────────────────────────────

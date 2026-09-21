@@ -1,11 +1,11 @@
-name: rig
+name: e2e-tests
 
 # The three-daemon tests, against nothing but published releases.
 #
 # **Nothing here builds a daemon, by design.** The question this repo asks is
 # whether three *released artifacts* work together; a job that built them from
 # HEAD would be asking a different question, and each daemon's own CI already
-# answers that one. So this installs the .debs `rig/rig_versions.toml` pins,
+# answers that one. So this installs the .debs `e2e-tests/rig_versions.toml` pins,
 # edits /etc/braemons, starts the daemons from the command lines their unit
 # files run, and runs the tests against them — which is what an operator does,
 # in the order an operator does it.
@@ -25,9 +25,9 @@ name: rig
 on:
   push:
     branches: [main]
-    paths: ["rig/**", ".github/workflows/rig.yml"]
+    paths: ["e2e-tests/**", ".github/workflows/e2e-tests.yml"]
   pull_request:
-    paths: ["rig/**", ".github/workflows/rig.yml"]
+    paths: ["e2e-tests/**", ".github/workflows/e2e-tests.yml"]
   schedule:
     - cron: "0 6 * * 1"
   workflow_dispatch:
@@ -54,24 +54,24 @@ jobs:
           python-version: "3.12"
 
       - name: Fetch the pinned release artifacts
-        run: make -C rig artifacts
+        run: make -C e2e-tests artifacts
 
       # What went in, in the log, next to the result. A red run's first question
       # is "which versions was that", and answering it should not need a rerun.
       - name: What is pinned
         run: |
           echo "::group::rig_versions.toml"
-          cat rig/rig_versions.toml
+          cat e2e-tests/rig_versions.toml
           echo "::endgroup::"
-          ls -lh rig/artifacts/
-          cat rig/artifacts/requirements.txt
+          ls -lh e2e-tests/artifacts/
+          cat e2e-tests/artifacts/requirements.txt
 
       # Installs the packages, configures /etc/braemons, starts both daemons and
       # the packaged device, runs the suite. It re-runs `artifacts`, which is
       # harmless; fetching in its own step above is what makes a fetch failure
       # legible as one rather than as a docker build error.
       - name: Install, configure, run
-        run: make -C rig test
+        run: make -C e2e-tests test
 
       - name: Lint
-        run: make -C rig lint
+        run: make -C e2e-tests lint

@@ -1,10 +1,11 @@
 """One trial, across all three daemons, with nothing faked in the middle.
 
 **What only this can be wrong about.** Each daemon's own suite proves that
-daemon. statemachined's stage-2 test proves the handover between it and triald.
-What is left, and lives nowhere else, is whether *three* fit: whether the frame
-axis vstimd publishes is the same axis triald bounds a trial with, and whether a
-trial that a state machine ran can be joined to what a renderer saw while it ran.
+daemon, and `test_the_handover_to_triald.py` beside this one proves the handover
+between statemachined and triald. What is left, and lives nowhere else, is
+whether *three* fit: whether the frame axis vstimd publishes is the same axis
+triald bounds a trial with, and whether a trial that a state machine ran can be
+joined to what a renderer saw while it ran.
 
 **The direction is the point, and it is visible here.** vstimd is commanded and
 publishes; statemachined is commanded and publishes; neither has a client, a
@@ -346,7 +347,10 @@ def test_a_trial_nobody_reports_the_end_of_is_the_consumers_to_end(display, arme
     finally:
         # The device is still running the trial: this test ended triald's
         # interest in it, not the trial. Leave the rig idle for the next test.
-        armed_executor.post("/api/trial/cancel", json={"reason": "OTHER"})
+        # By id: the cancel route names the trial it ends and forbids any
+        # other field, so a body carrying only a reason is a 422 that leaves
+        # the trial running.
+        armed_executor.post("/api/trial/cancel", json={"trial_id": trial_id})
 
     assert record is not None, (
         f"triald never gave up on trial {trial_id}: a cap of "
@@ -441,6 +445,39 @@ def test_a_restart_reaches_the_observer_through_the_stream_it_really_subscribes_
         "a window spanning a restart of the display was reported clean — the "
         "frame counter reset underneath it and nothing said so"
     )
+
+
+def test_the_graph_the_acceptance_suite_needs_a_wire_for_uploads_and_runs(
+    display, executor, on_hardware
+):
+    """The acceptance suite's lever graph, uploaded and run where there is no lever.
+
+    Those tests only run on a wired rig, so nothing else ever sent this graph to
+    a daemon -- and it had rotted: it declared a `MISS` outcome the executor
+    does not have, and a transition and a pulse in a schema the executor had
+    stopped accepting. The first acceptance run would have failed on the upload
+    and blamed the wiring. Here it goes through the same upload and the same
+    trial, and with nothing on the input it must take the timeout branch.
+    """
+    from triald.api.statemachine_executor import StateMachineExecutor
+    from triald.api.stimulus_subscriber import StimulusObserver, connect
+    from vstimd import Connection
+
+    scenarios.upload(executor, scenarios.graph_waiting_for_a_lever("lever", timeout_ms=200))
+    observer = StimulusObserver(connect("127.0.0.1", display["event_port"]))
+    observer.start()
+    try:
+        with Connection(display["address"], recv_timeout_s=10.0) as renderer:
+            ran = scenarios.run_one_trial(
+                display_connection=renderer,
+                executor_client=executor,
+                executor=StateMachineExecutor(base_url=executor.base_url),
+                observer=observer,
+                graph="lever",
+            )
+    finally:
+        observer.close()
+    assert ran.outcome.outcome.name == ("HIT" if on_hardware else "LATE"), ran.outcome
 
 
 def _finished_results_for(executor_client, trial_id: int) -> int:
