@@ -260,6 +260,36 @@ generated client and therefore a build step, which is a change from the
 existed so a **console** would not need one, and a client the daemon serves
 still satisfies it.
 
+### A Python daemon binds twice, and the ports are allocated with that in mind
+
+`tonic-web` is the Rust half of this. A **Python** daemon has no equivalent:
+`grpc.aio` owns its port outright and no ASGI server speaks native gRPC, so it
+cannot serve gRPC and a browser on one socket. It binds two — the panels on
+`--port` and gRPC on `--port + 1` — and the browser reaches it over the
+**Connect** protocol, which is plain HTTP POST and needs neither trailers nor
+HTTP/2 framing, dispatching into the same servicers.
+
+`+ 1` is derived and not a second setting, because a second setting is one
+nobody remembers to change. The cost is that a Python daemon occupies a *pair*,
+and the family's ports were allocated one per daemon before any of them did:
+
+| daemon | panels | gRPC | ports |
+|---|---|---|---|
+| **vstimd** | 8080 | same (`tonic-web`) | one |
+| **statemachined** | 8081 | 8082 | **two** |
+| **mousewheeld** | 8083 | same (`tonic-web`) | one |
+| **triald** | 8420 | 8421 | **two** |
+
+mousewheeld was 8082 and moved, because statemachined's derived port landed on
+it and a rig running both on their defaults collided. It moved rather than
+statemachined because it is the one that needs a single port, and because 8081
+is what a console's `rigs.json` and every packaged unit file already hold.
+
+**The rule this leaves**: a Python daemon's port and the one above it are both
+spoken for, so no two daemons may be given adjacent numbers unless both are
+Rust. vstimd and statemachined are adjacent and that is safe only for as long
+as vstimd stays Rust; if it ever needs two, it moves, not statemachined.
+
 ### The three layers, and the rule
 
 ```
