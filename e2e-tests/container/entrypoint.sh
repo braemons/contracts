@@ -87,6 +87,14 @@ if [ "$STATEMACHINED_DEVICE_TARGET" = "socket://127.0.0.1:5300" ]; then
   /usr/local/bin/statemachined_native_device --port 5300 \
     >/var/log/statemachined-device.log 2>&1 &
   DEVICE_PID=$!
+  # Listening before the daemon dials. statemachined greets the board once at
+  # startup and does not retry a refused connection, so a daemon that won the
+  # race would serve the whole run with no board, and every test that uploads
+  # a graph would fail with `not_connected` -- which is what happened.
+  for _ in $(seq 50); do
+    grep -q "^listening on" /var/log/statemachined-device.log 2>/dev/null && break
+    sleep 0.1
+  done
   echo "the firmware, compiled for this host, on $STATEMACHINED_DEVICE_TARGET"
 else
   echo "using $STATEMACHINED_DEVICE_TARGET; not starting a device"
@@ -121,7 +129,10 @@ from statemachined_client import StatemachinedClient
 try:
     with StatemachinedClient('127.0.0.1:8082') as rig:
         rig.wait_until_ready(timeout_s=1)
-        sys.exit(0 if rig.read_health().ok else 1)
+        health = rig.read_health()
+        # Up *and* holding the board: a daemon that is up with no device
+        # answers everything but the calls these tests are about.
+        sys.exit(0 if health.ok and health.device_connected else 1)
 except Exception:
     sys.exit(1)
 " 2>/dev/null; then break; fi
