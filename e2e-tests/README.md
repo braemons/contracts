@@ -59,53 +59,32 @@ about the thing installed on a rig.
 deliberate act of saying these three versions work together, which is the only
 claim this repo makes.
 
-### What this pin cannot test yet
+### What the pins say
 
-**`make test` is red, and the reason is worth reading.** statemachined's
-interface is `proto/statemachined/v1/` now: the `/api/...` routes are deleted,
-the daemon binds gRPC on `--port + 1`, and its client is `client/python/` — a
-distribution of its own. This suite drives it through that client, because
-driving it through anything else would mean a second description of an API that
-already has one.
-
-The pinned `v0.2.0-alpha1` predates all of it. It serves HTTP and publishes no
-client wheel, so `fetch_artifacts.py` reports the missing asset and the
-container cannot install what the tests import.
-
-That is the honest report. The alternative — leaving the suite on HTTP — keeps
-a green tick over an interface nothing serves any more, which is worse than a
-red one: a rig integration suite that passes against a contract no daemon
-honours is a suite that has stopped being about the rig.
-
-The next statemachined release changes what the container installs, and the
-image is written for it: the daemon is one Rust binary at
-`/usr/bin/statemachined` rather than a vendored tree under `/opt`, and the
-firmware compiled for the host is no longer in the package but a release asset
-of its own, `statemachined-native-device-amd64`, which `fetch_artifacts.py`
-fetches and the image installs as `statemachined_native_device`. It listens on
-a port itself; there is no `statemachined device` any more.
-
-**`make test-local` is green**, and that is the signal that still works: the
-three branches run a session together. It builds statemachined's daemon and
-native device in that checkout and puts them first on PATH; there is no Python
-statemachined to install. Cutting a statemachined release with the
-client wheel and bumping `rig_versions.toml` is what makes `make test` green
-again, and bumping a pin is the deliberate act of saying three versions work
-together.
-
-### The bootstrap gap, closed once before
-
-This section used to explain why none of the three shipped what these tests
-need. All of them did, and `make test` was green on nothing but published
-artifacts:
+`make test` is green on nothing but published artifacts, all of them speaking
+protobuf on every wire (`../DAEMON_LAYOUT.md` §2.1):
 
 | | release | what it publishes for this suite |
 |---|---|---|
-| vstimd | `v0.2.0-alpha1` | the server `.deb`, and `vstimd-client 0.2.0a1` on PyPI — the first client with an event stream |
-| statemachined | `v0.2.0-alpha1` | the daemon `.deb`, carrying the firmware compiled for the host at `libexec/statemachined-device` (a separate release asset from the next release on) |
-| triald | `v0.2.0-alpha1` | the daemon `.deb`, **and a wheel** — these tests import triald rather than run it |
+| vstimd | `v0.3.0-alpha2` | the server `.deb`, and `vstimd-client 0.3.0a1` on PyPI |
+| statemachined | `v0.3.0-alpha1` | the Rust daemon's `.deb` (`/usr/bin/statemachined`), `statemachined-native-device-amd64` — the firmware compiled for the host, the container's board-less far end — and the `statemachined_client` wheel this suite drives it through |
+| triald | `v0.3.0-alpha2` | the daemon `.deb`, **and a wheel** — these tests import triald rather than run it |
 
-Fixtures still resolve in three steps, and the order is the point:
+The 0.2 pins before these could not pass: statemachined `v0.2.0-alpha1` served
+HTTP and published no client, and the suite had already moved to the gRPC
+interface rather than keep a green tick over routes nothing served any more.
+
+**The container waits for the board, not only for the daemon.** statemachined
+greets its device once at startup and does not retry a refused connection, so
+`entrypoint.sh` starts the native device, waits for it to listen, and waits
+again until the daemon reports `device_connected` before running a test.
+Without that, a daemon that won the race served the whole run with no board.
+
+`make test-local` answers the other question — whether the checkouts work
+together — by building statemachined's daemon and native device in that
+checkout and putting them first on PATH.
+
+Fixtures resolve in three steps, and the order is the point:
 
 1. **The pinned release artifact** — the intended path, and the only one that
    tests what an operator installs.
