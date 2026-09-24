@@ -46,12 +46,12 @@ in §6. **What it is emphatically not:** a place to put shared code. See §7.
                     │ triald    decides · counts · records │   one session
                     └──┬──────────────┬───────────────┬────┘
         (A) push trial │   (B) push   │   (C) ask     │
-        HTTP+JSON      │   outcome    │   frame loss  │
-                       ▼   HTTP+JSON  │   ZMQ+proto   ▼
+        gRPC           │   outcome    │   frame loss  │
+                       ▼   gRPC       │   ZMQ+proto   ▼
               ┌────────────────┐◀─────┘        ┌──────────────┐
               │ statemachined  │               │    vstimd    │   always on
               └───────┬────────┘               └──────┬───────┘
-                      │ USB CDC · NDJSON              │
+                      │ USB CDC · protobuf (nanopb)   │
               ┌───────┴────────┐              ┌───────┴────────┐
               │    firmware    │              │  VTL shm ⇄ daqd│
               └───────┬────────┘              └───────┬────────┘
@@ -255,7 +255,7 @@ Not interactions in the sense above — no request, no reply, no schema to revie
 |---|---|
 | `vstimd/vtl/` | the shared-memory layout: 4 input banks, 1 output bank, `u64` each, rise/fall latches, drained once per frame at frame start |
 | `gpiochip-daqd` | VTL ⇄ `/dev/gpiochipN`. Input edges from kernel events, outputs mirrored onto pins |
-| `statemachined/dev/PROTOCOL.md` | USB CDC, NDJSON, CRC, indices-not-names. The daemon ⇄ firmware link |
+| `statemachined/docs/reference/protocol.md`, `proto/statemachined/link/v1/link.proto` | USB CDC, COBS-framed protobuf (nanopb on the board), CRC-16, indices-not-names. The daemon ⇄ firmware link |
 | `vstimd/vinput/` | the second shared-memory layout: a seqlock, `f64` axis values and a writer heartbeat, read once per frame. Where a wheel or an eye tracker reaches the camera (§3 D–F) |
 
 ### D, E, F — mousewheeld, a fourth participant
@@ -621,7 +621,9 @@ What does *not* change:
   stream, and nothing about gRPC helps there. §7's first table is still right
   about it.
 - the fast bus — `vinput`, `vtl` — is shared memory and is not an RPC at all.
-- the device wire stays NDJSON + CRC to the board.
+- the device wire stays NDJSON + CRC to the board. *(Superseded: every wire is
+  protobuf now, board links included, through nanopb. See
+  `DAEMON_LAYOUT.md` §2.1, which also says where that transition stands.)*
 
 Two findings from the spike worth carrying into the work:
 
@@ -990,7 +992,7 @@ Within a major version, for every interface in §3 and the fast bus beside it:
 
 A console showing three daemons' panels needs to know what it is showing, and
 the daemons cannot agree on a transport: statemachined, triald and mousewheeld
-speak HTTP+JSON, and vstimd's control surface is protobuf over a WebSocket. So
+speak gRPC, and vstimd's control surface is protobuf over ZMQ and a WebSocket. So
 the uniform place is the one they already share — **the mDNS TXT record**, which
 carries `id`, `version`, `api`, `elements`, `device` and `port` today.
 

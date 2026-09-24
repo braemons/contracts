@@ -7,13 +7,21 @@ all take, and the rule about where a daemon's public interface is written down.
 It is binding on those four. `console` is not a daemon and `contracts` runs
 nothing, so neither is bound by it.
 
-Two claims, and the second is the one that matters:
+Four claims, and the last three are the ones that matter:
 
 1. **Every daemon has the same directory layout**, so that knowing one repository
    is knowing all of them.
 2. **A daemon's public interface is authored in protobuf** — its types *and* its
    behaviours — and nothing else in the repository is allowed to be the authority
    on what that interface is.
+3. **Every wire in the family carries protobuf**, and every daemon follows it:
+   the control planes, the event streams, the browser edges, and the links to
+   the boards. **This transition is not complete** — §2.1 says where each daemon
+   stands and what is left.
+4. **Every daemon ships the same way**: at least a **Python client**
+   (`client/python/`, generated from its `proto/`), a **systemd unit**, and at
+   least a **`.deb`** package. A rig installs a daemon with the package manager,
+   runs it as a service, and scripts it from Python — whichever daemon it is.
 
 ## 1. The layout
 
@@ -192,6 +200,63 @@ prevent:
 None of the three names is load-bearing anywhere yet — nothing is shipped or
 used (§5) — so each is a rename rather than a migration. The fourth is work.
 
+## 2.1 Protobuf on every wire — the rule, and where the family stands
+
+**The protocol is protobuf everywhere.** Not only where a daemon's public API is
+written down, but on every wire a daemon speaks:
+
+- **Control planes** — gRPC, `proto/<daemon>/v1/`. Rust daemons serve the
+  browser on the same port through `tonic-web`.
+- **Event streams** — protobuf, over whichever transport the consumer needs.
+  Some daemons **publish events over ZeroMQ**, each message a protobuf from the
+  daemon's own `proto/`: vstimd's frame and stimulus events on its PUB socket,
+  which triald subscribes to. Others stream them as gRPC server streams
+  (statemachined's `WatchTrace`, mousewheeld's `WatchState`). Either is within
+  the rule; JSON on a PUB socket would not be.
+- **Board links** — protobuf too, generated for the firmware with **nanopb**,
+  in COBS frames with a CRC-16:
+  `COBS(protobuf ‖ CRC-16, big-endian) ‖ 0x00`. The schema is the daemon's own
+  `proto/<daemon>/link/v1/link.proto`, a separate package from its API so the
+  two never share a message by accident. mousewheeld's link is the reference;
+  statemachined's follows it.
+
+What is **not** a wire and stays as it is: documents on disk (graphs, zone sets,
+state-machine configs, line maps, scene-configs) keep serde/pydantic and JSON
+Schema, because a person edits them; rig configs stay TOML; the fast bus is
+shared memory. See "What proto does not touch" below.
+
+**No new JSON on a wire, in any repository.** A daemon that still speaks JSON
+somewhere is carrying a debt on this list, not a design choice, and a change
+that adds one is refused in review.
+
+### What every daemon has, and where each stands
+
+The shipping rule — claim 4 — holds today for all four; the protobuf rule does
+not yet:
+
+| daemon | Python client | systemd unit | `.deb` |
+|---|---|---|---|
+| **vstimd** | `client/python/` (`vstimd-client`) | `packaging/systemd/vstimd.service` | cargo-deb |
+| **mousewheeld** | `client/python/` | `packaging/mousewheeld.service` | nfpm |
+| **statemachined** | `client/python/` (`statemachined-client`) | `packaging/systemd/statemachined.service` | nfpm |
+| **triald** | `client/python/` | `packaging/systemd/triald.service` | nfpm |
+
+A new daemon joins the family with all three, and a daemon that drops one is
+out of line with this document.
+
+| daemon | control plane | events | browser | board link | left to do |
+|---|---|---|---|---|---|
+| **vstimd** | protobuf over ZMQ | protobuf over ZMQ | protobuf over a WebSocket | — | nothing on this rule; ZMQ is its transport by design (§6) |
+| **mousewheeld** | gRPC | gRPC streams | gRPC-Web (`tonic-web`) | protobuf + nanopb, on branch `firmware-esp32-nanopb` | merge the board link to `main` and release it |
+| **statemachined** | gRPC | gRPC streams | gRPC-Web (`tonic-web`) | protobuf + nanopb, on branch `rust-port` | merge `rust-port` (the Rust daemon, which replaced the Python one, and the protobuf link) and release it. `main` and the released `v0.2.0-alpha1` still carry the NDJSON link, and that release still serves HTTP+JSON |
+| **triald** | gRPC | gRPC streams | Connect on a second port (Python) | — | release the gRPC interface; `e2e-tests/rig_versions.toml` pins a release from before it |
+
+The e2e suite (`e2e-tests/`) is written against the protobuf interfaces, which
+is why its `make test` — pinned releases only — is red until the releases
+catch up, and its `make test-local` against checkouts is green. When every row's
+last column is empty and every pin names a release that has it, this section
+shrinks to its first paragraph.
+
 ## 2. The interface is proto
 
 ### Types and behaviours, both
@@ -223,8 +288,10 @@ to gRPC rested on a premise that has since moved, and the family had begun
 reimplementing gRPC one piece at a time.
 
 **vstimd stays ZMQ**, because it is time-critical and its clients decode a
-high-rate stream. The fast bus — `vinput`, `vtl` — is shared memory and is not
-an RPC at all. The device wire stays NDJSON + CRC to the board.
+high-rate stream — protobuf over ZMQ, which satisfies §2.1. The fast bus —
+`vinput`, `vtl` — is shared memory and is not an RPC at all. The device wire
+is protobuf too, through nanopb (§2.1), which is not gRPC: a board speaks
+framed messages, not rpcs.
 
 `braemons.v1.route` is therefore **gone**. An rpc's route is
 `/<package>.<Service>/<Method>`, decided by gRPC, and the generated service
@@ -320,10 +387,11 @@ described it. The file wins, because a person types it.
 - **The fast bus.** `vinput` and `vtl` are a seqlock over a C layout, not a
   serialisation format.
 - **Rig configs.** TOML, and they stay TOML.
-- **The device wire, for now.** NDJSON + CRC-16 to the board. §6 explains why the
-  firmware cannot consume protobuf today; nanopb makes it possible and is
-  planned, starting with mousewheeld's board because it is the only one not yet
-  written. Framing and CRC survive either way — protobuf is not self-delimiting.
+- **The device wire's framing.** The board link carries protobuf (§2.1), but
+  it is not gRPC and not the API package: its messages are the daemon's
+  `link/v1/`, and it keeps its own framing and CRC, because protobuf is not
+  self-delimiting. What NDJSON + CRC-16 used to be here is COBS + CRC-16 now,
+  wherever the transition is done.
 
 ### One package per daemon, and one for the family
 
@@ -421,8 +489,9 @@ deprecation to stage.
   work: a renderer and a serial link are not a trial policy.
 - **Firmware.** Only statemachined and mousewheeld have a board.
 - **Transport beyond the control plane.** §7's rule — the transport follows the
-  consumer, not the family — is unchanged. Control planes are HTTP+JSON;
-  high-rate streams are protobuf over ZMQ; the fast bus is shared memory.
+  consumer, not the family — is unchanged, and the *encoding* is not optional:
+  control planes are gRPC; high-rate streams are protobuf over ZMQ; board links
+  are protobuf through nanopb; the fast bus is shared memory. See §2.1.
 - **What is in `docs/`.** The layout fixes `docs/reference/api.md`; everything
   else in there is each repository's business.
 
@@ -451,6 +520,7 @@ deprecation to stage.
 5. **statemachined** — 46 rpcs, and `model/` has to be teased apart into wire,
    file and runtime before a wire type can exist.
 6. Firmware, with nanopb: mousewheeld's board first, then statemachined's.
+   **Both written, neither merged to `main` yet** — see §2.1.
 
 mousewheeld goes first because it is the newest, has no client to break, and is
 in the same language as vstimd, whose prost and pbjson toolchain is already
