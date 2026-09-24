@@ -229,10 +229,10 @@ shared memory. See "What proto does not touch" below.
 somewhere is carrying a debt on this list, not a design choice, and a change
 that adds one is refused in review.
 
-### What every daemon has, and where each stands
+### What every daemon has
 
-The shipping rule — claim 4 — holds today for all four; the protobuf rule does
-not yet:
+Both rules — protobuf on every wire, and claim 4's shipping rule — hold for all
+four as of the 0.3 alphas:
 
 | daemon | Python client | systemd unit | `.deb` |
 |---|---|---|---|
@@ -244,18 +244,17 @@ not yet:
 A new daemon joins the family with all three, and a daemon that drops one is
 out of line with this document.
 
-| daemon | control plane | events | browser | board link | left to do |
+| daemon | control plane | events | browser | board link | release |
 |---|---|---|---|---|---|
-| **vstimd** | protobuf over ZMQ | protobuf over ZMQ | protobuf over a WebSocket | — | nothing on this rule; ZMQ is its transport by design (§6) |
-| **mousewheeld** | gRPC | gRPC streams | gRPC-Web (`tonic-web`) | protobuf + nanopb, on branch `firmware-esp32-nanopb` | merge the board link to `main` and release it |
-| **statemachined** | gRPC | gRPC streams | gRPC-Web (`tonic-web`) | protobuf + nanopb, on branch `rust-port` | merge `rust-port` (the Rust daemon, which replaced the Python one, and the protobuf link) and release it. `main` and the released `v0.2.0-alpha1` still carry the NDJSON link, and that release still serves HTTP+JSON |
-| **triald** | gRPC | gRPC streams | Connect on a second port (Python) | — | release the gRPC interface; `e2e-tests/rig_versions.toml` pins a release from before it |
+| **vstimd** | protobuf over ZMQ | protobuf over ZMQ | protobuf over a WebSocket | — | `v0.3.0-alpha2`; ZMQ is its transport by design (§6) |
+| **mousewheeld** | gRPC | gRPC streams | gRPC-Web (`tonic-web`) | protobuf + nanopb | `v0.3.0-alpha1` |
+| **statemachined** | gRPC | gRPC streams | gRPC-Web (`tonic-web`) | protobuf + nanopb | `v0.3.0-alpha1`, the Rust daemon |
+| **triald** | gRPC | gRPC streams | gRPC-Web, binary, on a second port (Python) | — | `v0.3.0-alpha2` |
 
-The e2e suite (`e2e-tests/`) is written against the protobuf interfaces, which
-is why its `make test` — pinned releases only — is red until the releases
-catch up, and its `make test-local` against checkouts is green. When every row's
-last column is empty and every pin names a release that has it, this section
-shrinks to its first paragraph.
+The e2e suite (`e2e-tests/`) pins these releases and its `make test` is green
+on them. A daemon that takes JSON onto a wire again is out of line with this
+section, and so is a new one that arrives without all three of the shipping
+table's columns.
 
 ## 2. The interface is proto
 
@@ -332,9 +331,13 @@ still satisfies it.
 `tonic-web` is the Rust half of this. A **Python** daemon has no equivalent:
 `grpc.aio` owns its port outright and no ASGI server speaks native gRPC, so it
 cannot serve gRPC and a browser on one socket. It binds two — the panels on
-`--port` and gRPC on `--port + 1` — and the browser reaches it over the
-**Connect** protocol, which is plain HTTP POST and needs neither trailers nor
-HTTP/2 framing, dispatching into the same servicers.
+`--port` and gRPC on `--port + 1` — and the browser reaches it over
+**gRPC-Web**, the same transport `tonic-web` gives the Rust daemons' panels,
+answered by a small ASGI edge written against the specification (triald's
+`api/web_edge.py`) that dispatches into the same servicers. Binary only: the
+trailers travel as a frame of the body, so it needs neither HTTP trailers nor
+HTTP/2, and there is no JSON codec to fall back to. (triald spoke Connect until
+0.3, and its panels sent Connect's default, JSON.)
 
 `+ 1` is derived and not a second setting, because a second setting is one
 nobody remembers to change. The cost is that a Python daemon occupies a *pair*,
