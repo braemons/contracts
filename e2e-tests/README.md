@@ -77,8 +77,18 @@ a green tick over an interface nothing serves any more, which is worse than a
 red one: a rig integration suite that passes against a contract no daemon
 honours is a suite that has stopped being about the rig.
 
+The next statemachined release changes what the container installs, and the
+image is written for it: the daemon is one Rust binary at
+`/usr/bin/statemachined` rather than a vendored tree under `/opt`, and the
+firmware compiled for the host is no longer in the package but a release asset
+of its own, `statemachined-native-device-amd64`, which `fetch_artifacts.py`
+fetches and the image installs as `statemachined_native_device`. It listens on
+a port itself; there is no `statemachined device` any more.
+
 **`make test-local` is green**, and that is the signal that still works: the
-three branches run a session together. Cutting a statemachined release with the
+three branches run a session together. It builds statemachined's daemon and
+native device in that checkout and puts them first on PATH; there is no Python
+statemachined to install. Cutting a statemachined release with the
 client wheel and bumping `rig_versions.toml` is what makes `make test` green
 again, and bumping a pin is the deliberate act of saying three versions work
 together.
@@ -92,7 +102,7 @@ artifacts:
 | | release | what it publishes for this suite |
 |---|---|---|
 | vstimd | `v0.2.0-alpha1` | the server `.deb`, and `vstimd-client 0.2.0a1` on PyPI — the first client with an event stream |
-| statemachined | `v0.2.0-alpha1` | the daemon `.deb`, carrying the firmware compiled for the host at `libexec/statemachined-device` |
+| statemachined | `v0.2.0-alpha1` | the daemon `.deb`, carrying the firmware compiled for the host at `libexec/statemachined-device` (a separate release asset from the next release on) |
 | triald | `v0.2.0-alpha1` | the daemon `.deb`, **and a wheel** — these tests import triald rather than run it |
 
 Fixtures still resolve in three steps, and the order is the point:
@@ -134,9 +144,10 @@ imports. Reaching into it as a library exercises a path no operator has, and it
 also quietly avoided the real client: `StateMachineExecutor` runs over a real
 channel, the way it ships.
 
-**Two ports for a Python daemon.** `statemachined serve --port 8081` binds the
-panels there and gRPC on 8082, because `grpc.aio` owns its port outright and no
-ASGI server speaks native gRPC. `--executor` names the *panels'* port — the one
+**Two ports.** `statemachined serve --port 8081` serves the panels there and
+answers gRPC on 8082 as well. The Python daemon it replaced needed the second
+port because `grpc.aio` owns its port outright; the Rust one keeps it so that
+no client had to change at the cutover. `--executor` names the *panels'* port — the one
 a person types into a browser — and the fixtures do the arithmetic, in one
 place, written out rather than imported so that this suite can catch the two
 sides disagreeing. `contracts/DAEMON_LAYOUT.md` has the family's allocation.

@@ -34,7 +34,7 @@ test: artifacts ## install the packages in a container, configure, run
 # runs this target, so nothing else can notice.
 CHECKOUTS = \
 	$(TRIALD)/daemon/pyproject.toml \
-	$(STATEMACHINED)/daemon/pyproject.toml \
+	$(STATEMACHINED)/daemon-rs/Cargo.toml \
 	$(STATEMACHINED)/client/python/pyproject.toml \
 	$(VSTIMD)/client/python/pyproject.toml
 
@@ -62,17 +62,21 @@ test-local: check-checkouts ## against local checkouts (VSTIMD, STATEMACHINED, T
 	@# quietly fetched the *published* client while building everything else
 	@# from source would answer a question nobody asked.
 	@printf 'statemachined-client @ file://%s\n' "$(abspath $(STATEMACHINED)/client/python)" > .local-overrides.txt
-	@# `daemon/` in both, and statemachined's client is a distribution of its
-	@# own beside it -- the layout every repository in the family now takes
-	@# (contracts/DAEMON_LAYOUT.md). The extras carry what the daemons need;
-	@# nothing is named here that a pyproject already declares.
+	@# triald's daemon is Python, installed here with the two clients.
+	@# statemachined's daemon is Rust, like vstimd's: built in its checkout and
+	@# put first on PATH, with the firmware compiled for this host beside it
+	@# as the board-less fixture (contracts/DAEMON_LAYOUT.md).
 	uv pip install --quiet --overrides .local-overrides.txt \
 		-e "$(TRIALD)/daemon[serve]" \
-		-e "$(STATEMACHINED)/daemon[serve,device]" \
 		-e $(STATEMACHINED)/client/python \
 		-e $(VSTIMD)/client/python
+	@# An environment from before this installed the Python daemon, whose
+	@# console script `uv run` would put ahead of the Rust one on PATH.
+	uv pip uninstall --quiet statemachined 2>/dev/null || true
+	$(MAKE) -C $(STATEMACHINED) rust integration-device
 	VSTIMD_BINARY=$(abspath $(VSTIMD))/target/release/vstimd \
 	STATEMACHINED_NATIVE_DEVICE=$(abspath $(STATEMACHINED))/build/statemachined_native_device \
+	PATH=$(abspath $(STATEMACHINED))/target/debug:$$PATH \
 	uv run --group dev --no-sync pytest -v $(ARGS)
 
 # ── What an acceptance run does ───────────────────────────────────────────────

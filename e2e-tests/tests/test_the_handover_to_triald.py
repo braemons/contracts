@@ -73,9 +73,9 @@ def executor(request: pytest.FixtureRequest, tmp_path):
       upload `busy`), and refusing to start is what one test here is about.
 
     This used to skip instead, which meant the whole file ran nowhere CI looks.
-    A device of its own is the packaged `statemachined device` in the container
-    and statemachined's in-process bridge from a checkout; either way it is the
-    firmware compiled for this host, which is all a handover test needs. On
+    A device of its own is `statemachined_native_device` -- the firmware
+    compiled for this host, on a port of its own -- which is all a handover test
+    needs. On
     `--hardware` it is still a native device: these tests are about the wire
     format between two daemons, and a board is a thing they must not share.
     """

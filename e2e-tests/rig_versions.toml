@@ -41,6 +41,11 @@ version = "0.2.0.alpha1"
 # Renamed from plain `statemachined` at this release; the package Provides,
 # Conflicts and Replaces the old name, so an upgrade takes its files.
 asset = "braemons-statemachined_{version}-1_amd64.deb"
+# The firmware compiled for the host, as a release asset of its own: the
+# container's board-less far end. The package stopped carrying it when the
+# daemon became Rust, and releases from then on publish it beside the .deb --
+# so this pin, which predates that, does not have it either.
+native_device_asset = "statemachined-native-device-amd64"
 # **The client, which this release does not have.** statemachined's API is gRPC
 # from `proto/statemachined/v1/` and its client is `client/python/`, a
 # distribution of its own; these tests drive the daemon through it. `0.2.0a1`

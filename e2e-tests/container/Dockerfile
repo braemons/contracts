@@ -41,6 +41,10 @@ RUN apt-get update -qq \
 # fetched beside the .debs and installed from /tmp/artifacts. `--no-index` is
 # deliberately *not* set: vstimd-client is on PyPI and this is what a script's
 # author would run.
+# statemachined's firmware compiled for the host, the far end when there is no
+# board. A release asset of its own, not part of the package.
+COPY artifacts/statemachined-native-device-amd64 /usr/local/bin/statemachined_native_device
+RUN chmod +x /usr/local/bin/statemachined_native_device
 COPY artifacts/requirements.txt /tmp/requirements.txt
 COPY artifacts/*.whl /tmp/artifacts/
 RUN python3 -m venv /opt/e2e-tests \

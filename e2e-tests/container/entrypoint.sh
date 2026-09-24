@@ -20,10 +20,10 @@ log() { printf '\n=== %s ===\n' "$1"; }
 # expects, and its postinstall says so.
 
 log "configuring /etc/braemons"
-# The device the daemon talks to. Defaults to the one the package itself ships:
-# `statemachined device` puts the firmware compiled for this host on a port, so
-# a container -- like a rig box on the day it arrives -- has something real to
-# point at without a board. Override it to reach a board on a cable.
+# The device the daemon talks to. Defaults to the firmware compiled for this
+# host, which the image carries from statemachined's release and which listens
+# on a port, so the container has something real to point at without a board.
+# Override it to reach a board on a cable.
 STATEMACHINED_DEVICE_TARGET="${STATEMACHINED_DEVICE_TARGET:-socket://127.0.0.1:5300}"
 
 # `expected_board` is the third edit and the least obvious, so it is worth
@@ -34,7 +34,7 @@ STATEMACHINED_DEVICE_TARGET="${STATEMACHINED_DEVICE_TARGET:-socket://127.0.0.1:5
 # mismatch on purpose -- "its pin names may look right and mean different
 # holes, so nothing is pushed to it" -- and it is right to: a line map written
 # for one board silently addressing another board's pins is how a rig rewards
-# the wrong animal. So an operator running the packaged device has to say so,
+# the wrong animal. So an operator running the native device has to say so,
 # and this is that step, not a workaround for it.
 EXPECTED_BOARD="${EXPECTED_BOARD:-native}"
 if [ "$STATEMACHINED_DEVICE_TARGET" != "socket://127.0.0.1:5300" ]; then
@@ -84,7 +84,7 @@ log "starting the device"
 # does not also want a simulated one answering on 5300.
 DEVICE_PID=
 if [ "$STATEMACHINED_DEVICE_TARGET" = "socket://127.0.0.1:5300" ]; then
-  /opt/braemons/statemachined/bin/statemachined device --port 5300 \
+  /usr/local/bin/statemachined_native_device --port 5300 \
     >/var/log/statemachined-device.log 2>&1 &
   DEVICE_PID=$!
   echo "the firmware, compiled for this host, on $STATEMACHINED_DEVICE_TARGET"
@@ -100,7 +100,7 @@ log "starting vstimd"
 VSTIMD_PID=$!
 
 log "starting statemachined"
-/opt/braemons/statemachined/bin/statemachined serve \
+/usr/bin/statemachined serve \
   --host 127.0.0.1 --port 8081 --no-mdns \
   >/var/log/statemachined.log 2>&1 &
 STATEMACHINED_PID=$!
@@ -111,8 +111,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Asked over gRPC, on 8082 -- one above the port the panels are served on,
-# which is what `--port 8081` sets. A Python daemon binds twice; see
+# Asked over gRPC, on 8082 -- one above `--port 8081`, which the daemon answers
+# on as well, and where the family's clients dial it; see
 # contracts/DAEMON_LAYOUT.md.
 for _ in $(seq 30); do
   if /opt/e2e-tests/bin/python -c "

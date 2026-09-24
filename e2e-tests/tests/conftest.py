@@ -415,11 +415,11 @@ LINE_MAP = json.loads((pathlib.Path(__file__).parent / "line_map.json").read_tex
 #: Where statemachined's gRPC listens, given the port its panels are served on.
 #:
 #: **The `+ 1` is written here rather than imported**, deliberately. It is the
-#: daemon's arithmetic — `grpc_port_for` in its `api/grpc_server.py` — and a
-#: suite that imported it could not catch the two sides disagreeing. This is
-#: the same reason `rig_versions.toml` names asset filenames rather than
-#: deriving them. `contracts/DAEMON_LAYOUT.md` has why a Python daemon binds
-#: twice at all.
+#: daemon's arithmetic -- statemachined answers on `--port` and on the one
+#: above it, where the family's clients dial it -- and a suite that imported it
+#: could not catch the two sides disagreeing. This is the same reason
+#: `rig_versions.toml` names asset filenames rather than deriving them.
+#: `contracts/DAEMON_LAYOUT.md` has the family's ports.
 def grpc_port_for(web_port: int) -> int:
     return web_port + 1
 
@@ -650,60 +650,53 @@ def _spawned_executor(request: pytest.FixtureRequest, tmp_path, *, native: bool 
         device.stop()
 
 
-class _PackagedNativeDevice:
-    """`statemachined device`, the packaged command, on a port of its own.
+class _NativeDevice:
+    """statemachined's firmware compiled for this host, on a port of its own.
 
-    What a box that installed the `.deb` has: the same bridge and the same
-    firmware compiled for the host that `container/entrypoint.sh` starts for the
-    shared daemon, started again here for a test that needs a device nobody
-    else has touched.
+    `statemachined_native_device` listens on TCP itself -- `--port 0` asks the
+    kernel for a free port and the first line on stdout names it -- and a daemon
+    dials it as it would a board on a network. It is a test fixture, not part of
+    the package: a checkout builds it (`make integration-device`), and the
+    container has it from the release's own asset.
     """
 
     def __init__(self, tmp_path: pathlib.Path) -> None:
-        self.port = distinct_ports(1)[0]
-        self.target_url = f"socket://127.0.0.1:{self.port}"
-        self._log = tmp_path / "device.log"
-        self._sink = self._log.open("w")
         self._proc = subprocess.Popen(
-            [_statemachined_command(), "device", "--port", str(self.port)],
-            stdout=self._sink,
-            stderr=subprocess.STDOUT,
+            [_native_device_command(), "--port", "0"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
             cwd=tmp_path,
             env={**os.environ, "STATEMACHINED_STORE": str(tmp_path / "store.bin")},
+            text=True,
         )
-
-        def listening() -> bool:
-            if self._proc.poll() is not None:
-                pytest.fail(f"statemachined device exited at once:\n{self._log.read_text()}")
-            with contextlib.suppress(OSError), socket.create_connection(
-                ("127.0.0.1", self.port), timeout=0.5
-            ):
-                return True
-            return False
-
-        if not wait_until(listening, timeout_s=15.0):
+        assert self._proc.stdout is not None
+        first_line = self._proc.stdout.readline().strip()
+        if not first_line.startswith("listening on "):
             self.stop()
-            pytest.fail(f"statemachined device never listened:\n{self._log.read_text()}")
+            pytest.fail(f"statemachined_native_device said {first_line!r}, not where it listens")
+        self.target_url = "socket://" + first_line.removeprefix("listening on ")
 
     def stop(self) -> None:
         _stop(self._proc)
-        self._sink.close()
 
 
-def _native_device(tmp_path: pathlib.Path):
-    """The firmware compiled for this host, on a socket: imported if it can be.
+def _native_device(tmp_path: pathlib.Path) -> _NativeDevice:
+    """The firmware compiled for this host, on a socket."""
+    return _NativeDevice(tmp_path)
 
-    statemachined's own bridge in this process when its package is importable
-    (a checkout, `make test-local`); otherwise the installed command, which is
-    what the container has -- the daemon's venv is its own, not this suite's.
-    """
-    try:
-        from statemachined.device.native_device_on_a_socket import NativeDeviceOnASocket
-    except ImportError:
-        return _PackagedNativeDevice(tmp_path)
-    device = NativeDeviceOnASocket(store_path=str(tmp_path / "store.bin"))
-    device.start()
-    return device
+
+def _native_device_command() -> str:
+    """`$STATEMACHINED_NATIVE_DEVICE`, or `statemachined_native_device` on PATH."""
+    named = os.environ.get("STATEMACHINED_NATIVE_DEVICE")
+    if named and pathlib.Path(named).exists():
+        return named
+    found = shutil.which("statemachined_native_device")
+    if found:
+        return found
+    pytest.skip(
+        "no statemachined_native_device: build it in a statemachined checkout "
+        "(`make integration-device`) and name it in $STATEMACHINED_NATIVE_DEVICE"
+    )
 
 
 def _stop(proc: subprocess.Popen) -> None:
@@ -723,19 +716,17 @@ def _stop(proc: subprocess.Popen) -> None:
 
 
 def _statemachined_command() -> str:
-    """The daemon's entry point, as installed.
+    """The daemon, as installed: the binary the service unit runs.
 
-    `shutil.which` rather than `sys.executable -m`: the package declares a
-    console script and that is what the service unit runs, so it is what should
-    be exercised. A `.deb` puts it at /opt/braemons/statemachined/bin.
+    First on PATH, which is how `make test-local` puts a checkout's build in
+    front; the `.deb` installs it at /usr/bin/statemachined.
     """
-    for candidate in ("statemachined", "/opt/braemons/statemachined/bin/statemachined"):
-        found = shutil.which(candidate) or (candidate if pathlib.Path(candidate).exists() else None)
-        if found:
-            return found
+    found = shutil.which("statemachined")
+    if found:
+        return found
     pytest.skip(
-        "no statemachined on PATH: install it (`pip install statemachined`, or the "
-        ".deb) — see e2e-tests/README.md, 'The bootstrap gap'"
+        "no statemachined on PATH: install the .deb, or build it in a statemachined "
+        "checkout (`make rust`) — see e2e-tests/README.md, 'The bootstrap gap'"
     )
 
 

@@ -86,6 +86,9 @@ def main() -> int:
         if not repo or not pattern:
             continue
         ok &= fetch(repo, entry["tag"], pattern.format(version=entry["version"]))
+        # statemachined's board-less far end, a binary beside its package.
+        if entry.get("native_device_asset"):
+            ok &= fetch(repo, entry["tag"], entry["native_device_asset"])
         # A wheel published as a release asset rather than to a registry. Same
         # fetch, same directory: the image copies one directory and the whole
         # input set is visible in one place.
