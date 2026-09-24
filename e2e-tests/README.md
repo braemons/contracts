@@ -59,10 +59,34 @@ about the thing installed on a rig.
 deliberate act of saying these three versions work together, which is the only
 claim this repo makes.
 
-### The bootstrap gap, closed
+### What this pin cannot test yet
+
+**`make test` is red, and the reason is worth reading.** statemachined's
+interface is `proto/statemachined/v1/` now: the `/api/...` routes are deleted,
+the daemon binds gRPC on `--port + 1`, and its client is `client/python/` — a
+distribution of its own. This suite drives it through that client, because
+driving it through anything else would mean a second description of an API that
+already has one.
+
+The pinned `v0.2.0-alpha1` predates all of it. It serves HTTP and publishes no
+client wheel, so `fetch_artifacts.py` reports the missing asset and the
+container cannot install what the tests import.
+
+That is the honest report. The alternative — leaving the suite on HTTP — keeps
+a green tick over an interface nothing serves any more, which is worse than a
+red one: a rig integration suite that passes against a contract no daemon
+honours is a suite that has stopped being about the rig.
+
+**`make test-local` is green**, and that is the signal that still works: the
+three branches run a session together. Cutting a statemachined release with the
+client wheel and bumping `rig_versions.toml` is what makes `make test` green
+again, and bumping a pin is the deliberate act of saying three versions work
+together.
+
+### The bootstrap gap, closed once before
 
 This section used to explain why none of the three shipped what these tests
-need. All of them do now, and `make test` is green on nothing but published
+need. All of them did, and `make test` was green on nothing but published
 artifacts:
 
 | | release | what it publishes for this suite |
@@ -98,16 +122,31 @@ is on the wire is an operator's step, and `container/entrypoint.sh` does it.
 
 ### Nothing here imports a daemon
 
-Except the two libraries an experiment script imports: `triald` and
-`vstimd-client`. The daemons themselves are **processes on ports**, started the
-way their service units start them and talked to over HTTP and ZeroMQ.
+Except the three libraries an experiment script imports: `triald`,
+`vstimd-client` and `statemachined-client`. The daemons themselves are
+**processes on ports**, started the way their service units start them and
+talked to over gRPC and ZeroMQ.
 
 That was not true at first. The executor fixture built statemachined in-process
 with Starlette's `TestClient`, which is how statemachined's own suite tests it — correctly, because there the daemon is the subject. Here it is not:
-what is under test is a rig, and on a rig this daemon is a service on port 8081
-that nothing imports. Reaching into it as a library exercises a path no operator
-has, and it also quietly avoided the real client: `StateMachineExecutor` now runs
-over httpx and a real WebSocket, the way it ships.
+what is under test is a rig, and on a rig this daemon is a service that nothing
+imports. Reaching into it as a library exercises a path no operator has, and it
+also quietly avoided the real client: `StateMachineExecutor` runs over a real
+channel, the way it ships.
+
+**Two ports for a Python daemon.** `statemachined serve --port 8081` binds the
+panels there and gRPC on 8082, because `grpc.aio` owns its port outright and no
+ASGI server speaks native gRPC. `--executor` names the *panels'* port — the one
+a person types into a browser — and the fixtures do the arithmetic, in one
+place, written out rather than imported so that this suite can catch the two
+sides disagreeing. `contracts/DAEMON_LAYOUT.md` has the family's allocation.
+
+**A subscription carries the ring's backlog.** The WebSocket began at the
+newest entry; `WatchTrace` starts wherever it is told and defaults to the
+beginning, which is right for a subscriber that reconnects and wrong for a test
+watching for something it is about to cause. So every test here takes a mark
+before it arms a trial and subscribes from it — which is also what makes the
+suite correct for a 40 ms trial that ends before anybody is watching.
 
 ## Running it
 

@@ -61,7 +61,7 @@ def renderer(display):
 def trial_executor(executor):
     from triald.api.statemachine_executor import StateMachineExecutor
 
-    return StateMachineExecutor(base_url=executor.base_url)
+    return StateMachineExecutor(executor.address)
 
 
 # ── Electricity ───────────────────────────────────────────────────────────────

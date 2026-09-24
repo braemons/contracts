@@ -111,11 +111,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Asked over gRPC, on 8082 -- one above the port the panels are served on,
+# which is what `--port 8081` sets. A Python daemon binds twice; see
+# contracts/DAEMON_LAYOUT.md.
 for _ in $(seq 30); do
   if /opt/e2e-tests/bin/python -c "
-import sys, httpx
+import sys
+from statemachined_client import StatemachinedClient
 try:
-    sys.exit(0 if httpx.get('http://127.0.0.1:8081/api/health', timeout=1).status_code == 200 else 1)
+    with StatemachinedClient('127.0.0.1:8082') as rig:
+        rig.wait_until_ready(timeout_s=1)
+        sys.exit(0 if rig.read_health().ok else 1)
 except Exception:
     sys.exit(1)
 " 2>/dev/null; then break; fi
@@ -125,12 +131,12 @@ done
 log "the daemons, as installed"
 dpkg-query -W -f='${Package} ${Version}\n' \
   braemons-vstimd braemons-statemachined braemons-triald statemachined 2>/dev/null || true
-/opt/e2e-tests/bin/pip list 2>/dev/null | grep -iE "vstimd|triald" || true
+/opt/e2e-tests/bin/pip list 2>/dev/null | grep -iE "vstimd|triald|statemachined" || true
 
 log "tests"
 cd /opt/e2e-tests
 exec ./bin/python -m pytest tests -v \
   --display tcp://127.0.0.1:5555 \
   --event-port 5556 \
-  --executor http://127.0.0.1:8081 \
+  --executor 127.0.0.1:8081 \
   "$@"

@@ -138,6 +138,27 @@ def free_port() -> int:
         return int(s.getsockname()[1])
 
 
+def free_port_with_a_free_successor() -> int:
+    """A free port whose `port + 1` is free too.
+
+    `statemachined serve` binds both: the panels on `--port` and gRPC on one
+    above it. Asking the kernel for one port says nothing about the next, and a
+    daemon that comes up and then cannot start its second listener fails a test
+    for a reason that has nothing to do with what it was testing.
+    """
+    for _ in range(50):
+        with socket.socket() as first:
+            first.bind(("127.0.0.1", 0))
+            port = int(first.getsockname()[1])
+            try:
+                with socket.socket() as second:
+                    second.bind(("127.0.0.1", port + 1))
+            except OSError:
+                continue
+            return port
+    raise AssertionError("no pair of consecutive free ports after 50 tries")
+
+
 def distinct_ports(count: int) -> list[int]:
     """`count` ports that are not each other.
 
@@ -391,6 +412,18 @@ def restartable_display(vstimd_binary: pathlib.Path, tmp_path_factory):
 LINE_MAP = json.loads((pathlib.Path(__file__).parent / "line_map.json").read_text())
 
 
+#: Where statemachined's gRPC listens, given the port its panels are served on.
+#:
+#: **The `+ 1` is written here rather than imported**, deliberately. It is the
+#: daemon's arithmetic — `grpc_port_for` in its `api/grpc_server.py` — and a
+#: suite that imported it could not catch the two sides disagreeing. This is
+#: the same reason `rig_versions.toml` names asset filenames rather than
+#: deriving them. `contracts/DAEMON_LAYOUT.md` has why a Python daemon binds
+#: twice at all.
+def grpc_port_for(web_port: int) -> int:
+    return web_port + 1
+
+
 class Executor:
     """A statemachined on a port, talked to the way anything else would.
 
@@ -398,41 +431,69 @@ class Executor:
     daemon in-process with Starlette's `TestClient`, which is how statemachined's
     own suite tests statemachined — correctly, because there the daemon is the
     subject. Here it is not: what is under test is a rig, and on a rig this
-    daemon is a service on port 8081 that nothing imports. A test that reached
-    into it as a library would be exercising a path no operator has.
+    daemon is a service that nothing imports. A test that reached into it as a
+    library would be exercising a path no operator has.
 
-    So: a real process, real HTTP, and a real WebSocket for the trace. Which also
-    means `StateMachineExecutor` is used the way it ships, over httpx, rather
-    than with a test client injected into it.
+    So: a real process, a real gRPC channel, and a real server stream for the
+    trace. Which also means `StateMachineExecutor` is used the way it ships.
+
+    **It was HTTP, and the routes are gone.** statemachined's interface is
+    `proto/statemachined/v1/` now, and the only description of it is that file;
+    this suite reaches it through `statemachined-client`, which is generated
+    from it. What that costs is that the *pinned releases* in
+    `rig_versions.toml` predate the change — see README.md.
     """
 
-    def __init__(self, base_url: str, client) -> None:
-        self.base_url = base_url
-        self._client = client
+    def __init__(self, address: str, client) -> None:
+        #: `host:port` of the gRPC listener, which is what a client is given.
+        self.address = address
+        self.client = client
 
-    def get(self, path: str, **kw):
-        return self._client.get(path, **kw)
+    def mark(self) -> int:
+        """The entry number a subscription should start *after* to see only
+        what happens from now on.
 
-    def post(self, path: str, **kw):
-        return self._client.post(path, **kw)
-
-    def put(self, path: str, **kw):
-        return self._client.put(path, **kw)
+        **This is the one thing the transport changed under these tests.** A
+        WebSocket subscription began at the newest entry; `WatchTrace` carries
+        the ring's whole backlog, so a stream opened with no mark replays every
+        trial the daemon has ever run — and a test looking for "the next trial
+        to finish" got the first one instead. That is the better default for a
+        subscriber that reconnects, and the wrong one for a test asking what
+        happens next, so the tests say which they mean.
+        """
+        return self.client.read_state().newest_trace_entry_number + 1
 
     @contextlib.contextmanager
-    def trace_stream(self, observer: str = "triald"):
-        """The executor's published trace, as an iterator of messages.
+    def trace_stream(self, observer: str = "triald", since: int | None = None):
+        """The executor's published trace, as an iterator of entries.
 
-        Opening this is the whole of subscribing and closing it is the whole of
-        leaving: nothing on the far end holds a trial for a subscriber, and
-        `?observer=` is a label on its diagnostics page that grants nothing.
+        Opening this is the whole of subscribing and cancelling it is the whole
+        of leaving: nothing on the far end holds a trial for a subscriber, and
+        the observer name is a label on its diagnostics that grants nothing.
+
+        `since` is where to start. **The default is "from now"**, which is what
+        a test watching for something it is about to cause means; a caller that
+        armed a trial before subscribing passes the mark it took beforehand,
+        and nothing is missed.
+
+        **A deadline, because a subscription does not end.** The caller decides
+        how long it is willing to wait — only the side that knows a trial is in
+        flight can tell "not yet" from "never" — and this suite's answer is
+        `TRACE_DEADLINE_SECONDS`.
         """
-        from websockets.sync.client import connect
+        subscription = self.client.watch_trace(
+            self.mark() if since is None else since,
+            observer=observer,
+            timeout_s=TRACE_DEADLINE_SECONDS,
+        )
+        with subscription:
+            yield iter(subscription)
 
-        scheme = "wss" if self.base_url.startswith("https") else "ws"
-        rest = self.base_url.split("://", 1)[-1]
-        with connect(f"{scheme}://{rest}/api/trace/stream?observer={observer}") as socket:
-            yield iter(lambda: socket.recv(), None)
+
+#: How long a subscription in this suite will wait before it is a failure.
+#: Generous against a container on a loaded runner, and finite so a wedged rig
+#: fails the suite rather than hanging it.
+TRACE_DEADLINE_SECONDS = 60.0
 
 
 def _rig_config(device_target: str, tmp_path: pathlib.Path) -> pathlib.Path:
@@ -482,22 +543,43 @@ def executor(request: pytest.FixtureRequest, tmp_path):
     firmware compiled for this host. That path is for developing; it is not what
     `make test` runs.
     """
-    import httpx
+    from statemachined_client import StatemachinedClient
 
     attached = request.config.getoption("--executor")
     if attached:
-        client = httpx.Client(base_url=attached, timeout=10.0)
+        address = _grpc_address(attached)
+        client = StatemachinedClient(address)
         try:
-            if client.get("/api/health").status_code != 200:
-                pytest.skip(f"statemachined at {attached} is not healthy")
+            client.wait_until_ready(timeout_s=10)
+            if not client.read_health().ok:
+                pytest.skip(f"statemachined at {address} is not healthy")
         except Exception as error:
-            pytest.skip(f"no statemachined at {attached}: {error}")
-        yield Executor(attached, client)
-        _leave_the_device_idle(client, attached)
+            pytest.skip(f"no statemachined at {address}: {error}")
+        yield Executor(address, client)
+        _leave_the_device_idle(client, address)
         client.close()
         return
 
     yield from _spawned_executor(request, tmp_path)
+
+
+def _grpc_address(given: str) -> str:
+    """`--executor` as a gRPC target.
+
+    The option names the daemon by the port its **panels** are on — what a
+    person types into a browser and what a console's `rigs.json` holds — and
+    gRPC is one above it. Accepting the familiar number and doing the
+    arithmetic here beats asking every operator to learn a second one.
+
+    **It is always the panels' port, never gRPC's.** There is no way to tell
+    `8081` from `8082` by looking at it, so guessing would make one of the two
+    silently wrong; `--executor` means one thing.
+    """
+    address = given.strip().removeprefix("http://").removeprefix("https://").rstrip("/")
+    host, _, port = address.rpartition(":")
+    if not host or not port.isdigit():
+        return address
+    return f"{host}:{grpc_port_for(int(port))}"
 
 
 def _spawned_executor(request: pytest.FixtureRequest, tmp_path, *, native: bool = False):
@@ -507,7 +589,7 @@ def _spawned_executor(request: pytest.FixtureRequest, tmp_path, *, native: bool 
     for a test that is about the daemons' handover rather than about wires and
     must not share a board -- see `test_the_handover_to_triald.py`.
     """
-    import httpx
+    from statemachined_client import StatemachinedClient
 
     on_hardware = request.config.getoption("--hardware") and not native
     if on_hardware:
@@ -517,8 +599,11 @@ def _spawned_executor(request: pytest.FixtureRequest, tmp_path, *, native: bool 
         device = _native_device(tmp_path)
         device_target = device.target_url
 
-    port = distinct_ports(1)[0]
-    base_url = f"http://127.0.0.1:{port}"
+    # **Two ports, and only one is asked for.** `serve` binds the panels on
+    # `--port` and gRPC on one above it, so what this needs is a port whose
+    # successor is also free — not two ports that merely differ.
+    port = free_port_with_a_free_successor()
+    address = f"127.0.0.1:{grpc_port_for(port)}"
     log = tmp_path / "statemachined.log"
     with log.open("w") as sink:
         proc = subprocess.Popen(
@@ -537,13 +622,13 @@ def _spawned_executor(request: pytest.FixtureRequest, tmp_path, *, native: bool 
             stdout=sink,
             stderr=subprocess.STDOUT,
         )
-        client = httpx.Client(base_url=base_url, timeout=10.0)
+        client = StatemachinedClient(address)
 
         def answering() -> bool:
             if proc.poll() is not None:
                 pytest.fail(f"statemachined exited at once:\n{log.read_text()}")
             try:
-                return client.get("/api/health").status_code == 200
+                return client.read_health().ok
             except Exception:
                 return False
 
@@ -551,11 +636,11 @@ def _spawned_executor(request: pytest.FixtureRequest, tmp_path, *, native: bool 
             _stop(proc)
             pytest.fail(f"statemachined never answered:\n{log.read_text()}")
 
-        if on_hardware and not client.get("/api/device").json().get("connected"):
+        if on_hardware and not client.read_device().connected:
             _stop(proc)
             pytest.skip(f"no board answering on {device_target}")
 
-        yield Executor(base_url, client)
+        yield Executor(address, client)
 
         if on_hardware:
             _leave_the_device_idle(client, device_target)
@@ -661,22 +746,20 @@ def _leave_the_device_idle(client, target: str) -> None:
     walks away mid-trial fails the next several with an error about something
     else entirely. Local runs get a new device per test and need none of this.
 
-    **A cancel names the trial it is cancelling.** `POST /api/trial/cancel` takes
-    a `trial_id` and forbids anything else in the body, so the `{"reason": ...}`
-    this used to send was a 422 the daemon never acted on -- a teardown that had
-    never once returned a device to idle, invisible because nothing had yet run
-    after the one test that leaves a trial in flight. The id comes from the
-    daemon rather than from the caller: whatever is actually armed is what has
-    to be cancelled, and the test that armed it may be the one that failed.
+    **A cancel names the trial it is cancelling.** `Trial/Cancel` takes a
+    `trial_id` and nothing else, so the `{"reason": ...}` this once sent over
+    HTTP was a 422 the daemon never acted on -- a teardown that had never once
+    returned a device to idle, invisible because nothing had yet run after the
+    one test that leaves a trial in flight. An rpc could not have had that bug:
+    a field the message does not declare is a compile-time error in the client
+    rather than a body the far end silently rejects.
     """
     try:
-        state = client.get("/api/state")
-        if state.status_code != 200:
-            return
-        frame = state.json()
-        # The daemon's own definition of busy — `running`, or a link state of 2,
-        # which is armed but not yet started.
-        client.post("/api/trial/cancel", json={"trial_id": frame.get("trial_id") or 0})
+        state = client.read_state()
+        # The id comes from the daemon rather than from the caller: whatever is
+        # actually armed is what has to be cancelled, and the test that armed
+        # it may be the one that failed.
+        client.cancel_trial(state.trial_id or 0)
         # Cancelling is a round trip to the device; the next test's upload is
         # refused if it arrives first.
         wait_until(lambda: not _is_busy(client), timeout_s=5.0)
@@ -685,11 +768,13 @@ def _leave_the_device_idle(client, target: str) -> None:
 
 
 def _is_busy(client) -> bool:
-    frame = client.get("/api/state")
-    if frame.status_code != 200:
+    """The daemon's own definition: running, or a link state of 2, which is
+    armed but not yet started."""
+    try:
+        state = client.read_state()
+    except Exception:
         return False
-    body = frame.json()
-    return bool(body.get("running") or body.get("link_state") == 2)
+    return bool(state.running or state.link_state == 2)
 
 
 # ── The operator ──────────────────────────────────────────────────────────────

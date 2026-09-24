@@ -13,10 +13,15 @@ dependencies = []
 # are installed is the question this repo asks. `make test` puts in the pinned
 # releases from rig_versions.toml; `make test-local` puts in local checkouts.
 # Declaring them here would make one of those the default and hide the other.
-# httpx to talk to the daemons, websockets for the trace stream. No fastapi:
-# nothing here builds an application any more — the daemons are processes, the
-# way they are on a rig.
-dev = ["pytest>=8.3", "ruff>=0.8", "httpx>=0.28", "websockets>=13"]
+# No client libraries here either, for the same reason the daemons are not:
+# `statemachined-client` and `vstimd-client` are installed by the Makefile, so
+# that `make test` gets the *pinned* ones and `make test-local` gets the
+# checkouts. Declaring either here would make one of those the default and
+# hide the other.
+#
+# httpx and websockets are gone with statemachined's routes: nothing here
+# speaks HTTP any more, and the two streams are server-streaming rpcs.
+dev = ["pytest>=8.3", "ruff>=0.8"]
 
 [tool.ruff]
 line-length = 100

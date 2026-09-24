@@ -23,12 +23,13 @@ renderer, spanning the trial that really ran.
 
 from __future__ import annotations
 
-import json
+import contextlib
 import time
 
 import pytest
 import scenarios
 from conftest import wait_until
+from statemachined_client import DaemonRefusedTheRequest
 
 
 @pytest.fixture
@@ -62,14 +63,13 @@ def test_all_three_are_up_and_none_of_them_knows_the_others(display, armed_execu
             "the renderer's frame clock is not running"
         )
 
-    state = armed_executor.get("/api/state")
-    assert state.status_code == 200
-    assert "triald" not in json.dumps(state.json()).lower(), (
+    state = armed_executor.client.read_state()
+    assert "triald" not in str(state).lower(), (
         "the state machine daemon named the decision authority in its own state"
     )
-    config = armed_executor.get("/api/config")
-    assert config.status_code == 200
-    settings = json.dumps(config.json()).lower()
+    # The **rig** config — this box's hardware. Not a state-machine config,
+    # which is one experiment's graphs and wiring (contracts/DAEMON_LAYOUT.md).
+    settings = str(armed_executor.client.read_configuration()).lower()
     for stranger in ("triald", "vstimd", "5556"):
         assert stranger not in settings, (
             f"the state machine daemon's configuration names {stranger!r}; it is "
@@ -138,8 +138,8 @@ def test_a_trial_runs_on_one_daemon_and_is_bounded_by_frames_from_another(displa
 
     observer = StimulusObserver(connect("127.0.0.1", display["event_port"]))
     observer.start()
-    # The real client: httpx against a real server, which is how it ships.
-    executor = StateMachineExecutor(base_url=armed_executor.base_url)
+    # The real client: a real gRPC channel to a real server, as it ships.
+    executor = StateMachineExecutor(armed_executor.address)
 
     try:
         with Connection(display["address"], recv_timeout_s=10.0) as renderer:
@@ -150,6 +150,9 @@ def test_a_trial_runs_on_one_daemon_and_is_bounded_by_frames_from_another(displa
             first_frame = renderer.system.wait_for_frames(0).frame_count
             observer.open_window(first_frame=first_frame)
 
+            # Before arming: the subscription is opened after, and a short
+            # trial ends before a late subscriber is watching.
+            before_arming = armed_executor.mark()
             executor.configure(
                 TrialConfiguration(trial_id=1, statemachine_graph="show", cap_milliseconds=5000)
             )
@@ -157,7 +160,7 @@ def test_a_trial_runs_on_one_daemon_and_is_bounded_by_frames_from_another(displa
 
             # Observed, not waited on: the executor published and moved on, and
             # this side is the one holding a deadline. Same shape as stage 2.
-            with armed_executor.trace_stream() as messages:
+            with armed_executor.trace_stream(since=before_arming) as messages:
                 finished = next(executor.finished_trials(messages))
             assert finished == 1
             outcome = executor.outcome_of(trial_id=1)
@@ -201,14 +204,15 @@ def test_the_observer_survives_a_trial_it_was_not_watching(display, armed_execut
 
     observer = StimulusObserver(connect("127.0.0.1", display["event_port"]))
     observer.start()
-    # The real client: httpx against a real server, which is how it ships.
-    executor = StateMachineExecutor(base_url=armed_executor.base_url)
+    # The real client: a real gRPC channel to a real server, as it ships.
+    executor = StateMachineExecutor(armed_executor.address)
     try:
+        before_arming = armed_executor.mark()
         executor.configure(
             TrialConfiguration(trial_id=7, statemachine_graph="show", cap_milliseconds=5000)
         )
         executor.start(7)
-        with armed_executor.trace_stream() as messages:
+        with armed_executor.trace_stream(since=before_arming) as messages:
             assert next(executor.finished_trials(messages)) == 7
         # No window was ever opened, and nothing anywhere minded.
         assert observer.close_window(last_frame=1) is None
@@ -240,7 +244,7 @@ def test_two_trials_keep_their_own_frames_and_their_own_outcomes(display, armed_
 
     observer = StimulusObserver(connect("127.0.0.1", display["event_port"]))
     observer.start()
-    executor = StateMachineExecutor(base_url=armed_executor.base_url)
+    executor = StateMachineExecutor(armed_executor.address)
 
     windows = []
     # Unique, not 1 and 2: the executor may be a daemon that has been up for
@@ -252,6 +256,7 @@ def test_two_trials_keep_their_own_frames_and_their_own_outcomes(display, armed_
                 first_frame = renderer.system.wait_for_frames(0).frame_count
                 observer.open_window(first_frame=first_frame)
 
+                before_arming = armed_executor.mark()
                 executor.configure(
                     TrialConfiguration(
                         trial_id=trial_id,
@@ -260,7 +265,7 @@ def test_two_trials_keep_their_own_frames_and_their_own_outcomes(display, armed_
                     )
                 )
                 executor.start(trial_id)
-                with armed_executor.trace_stream() as messages:
+                with armed_executor.trace_stream(since=before_arming) as messages:
                     assert next(executor.finished_trials(messages)) == trial_id
 
                 outcome = executor.outcome_of(trial_id=trial_id)
@@ -321,7 +326,7 @@ def test_a_trial_nobody_reports_the_end_of_is_the_consumers_to_end(display, arme
     patient = scenarios.timed_graph("patient", milliseconds=30_000)
     scenarios.upload(armed_executor, patient)
 
-    executor = StateMachineExecutor(base_url=armed_executor.base_url)
+    executor = StateMachineExecutor(armed_executor.address)
     spec = session.next_trial()
     trial_id = spec.trial_number
 
@@ -347,10 +352,10 @@ def test_a_trial_nobody_reports_the_end_of_is_the_consumers_to_end(display, arme
     finally:
         # The device is still running the trial: this test ended triald's
         # interest in it, not the trial. Leave the rig idle for the next test.
-        # By id: the cancel route names the trial it ends and forbids any
-        # other field, so a body carrying only a reason is a 422 that leaves
-        # the trial running.
-        armed_executor.post("/api/trial/cancel", json={"trial_id": trial_id})
+        # Tolerated, because by now it may have ended on its own -- and "there
+        # is nothing to cancel" is a fine outcome for a teardown.
+        with contextlib.suppress(DaemonRefusedTheRequest):
+            armed_executor.client.cancel_trial(trial_id)
 
     assert record is not None, (
         f"triald never gave up on trial {trial_id}: a cap of "
@@ -471,7 +476,7 @@ def test_the_graph_the_acceptance_suite_needs_a_wire_for_uploads_and_runs(
             ran = scenarios.run_one_trial(
                 display_connection=renderer,
                 executor_client=executor,
-                executor=StateMachineExecutor(base_url=executor.base_url),
+                executor=StateMachineExecutor(executor.address),
                 observer=observer,
                 graph="lever",
             )
@@ -483,14 +488,15 @@ def test_the_graph_the_acceptance_suite_needs_a_wire_for_uploads_and_runs(
 def _finished_results_for(executor_client, trial_id: int) -> int:
     """How many finished results the executor holds for one trial id.
 
-    Counted through the API rather than the client's `outcome_of`, because that
-    one refuses a trial with no result *and* a trial with two — and this test
-    needs to tell those apart rather than catch either.
+    Counted off the trace rather than through the client's `outcome_of`,
+    because that one refuses a trial with no result *and* a trial with two —
+    and this test needs to tell those apart rather than catch either.
+
+    A trial the ring has never heard of reads as an empty list rather than a
+    refusal: the ring cannot tell "no such trial" from "a trial whose entries
+    were overwritten", so it says what it saw.
     """
-    response = executor_client.get(f"/api/trial/{trial_id}")
-    if response.status_code != 200:
-        return 0
-    events = response.json()
-    if isinstance(events, dict):
-        events = events.get("events", [])
-    return sum(1 for event in events if event.get("kind") in ("trial_result", "result"))
+    from statemachined_client import KIND_TRIAL_RESULT
+
+    entries = executor_client.client.read_trial_trace(trial_id)
+    return sum(1 for entry in entries if entry.kind == KIND_TRIAL_RESULT)

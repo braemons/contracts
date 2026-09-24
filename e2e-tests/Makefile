@@ -1,4 +1,4 @@
-.PHONY: help artifacts test test-local accept accept-docker accept-pi lint clean
+.PHONY: help artifacts test test-local check-checkouts accept accept-docker accept-pi lint clean
 
 # Local checkouts, for the developer path only. `make test` uses none of them.
 VSTIMD        ?= ../../vstimd
@@ -27,13 +27,50 @@ test: artifacts ## install the packages in a container, configure, run
 # Against local checkouts, building what needs building. Faster, and it answers
 # a different question: whether the branches work together, not whether the
 # release does. `make test` is the one that gates.
-test-local: ## against local checkouts (VSTIMD, STATEMACHINED, TRIALD)
+# **The paths are checked before anything is installed.** They rotted silently
+# once: both daemons moved their package into `daemon/` and this target went on
+# naming `$(TRIALD)` and `$(STATEMACHINED)/python`, which uv reports as "does
+# not appear to be a Python project" — a message about the wrong thing. CI never
+# runs this target, so nothing else can notice.
+CHECKOUTS = \
+	$(TRIALD)/daemon/pyproject.toml \
+	$(STATEMACHINED)/daemon/pyproject.toml \
+	$(STATEMACHINED)/client/python/pyproject.toml \
+	$(VSTIMD)/client/python/pyproject.toml
+
+check-checkouts:
+	@missing=""; for f in $(CHECKOUTS); do [ -f "$$f" ] || missing="$$missing  $$f"; done; \
+	if [ -n "$$missing" ]; then \
+	  echo "make test-local needs three checkouts beside this one, and cannot find:"; \
+	  echo "$$missing" | tr ' ' '\n' | grep -v '^$$' | sed 's/^/  /'; \
+	  echo ""; \
+	  echo "Point them at yours: make test-local VSTIMD=... STATEMACHINED=... TRIALD=..."; \
+	  exit 1; \
+	fi
+
+test-local: check-checkouts ## against local checkouts (VSTIMD, STATEMACHINED, TRIALD)
 	uv sync --quiet --group dev
-	uv pip install --quiet \
-		-e $(TRIALD) \
-		-e "$(STATEMACHINED)/python[serve]" \
-		-e $(VSTIMD)/client/python \
-		fastapi uvicorn pydantic httpx
+	@# **The override is what makes "all local" possible.** triald declares
+	@# `statemachined-client` as a git URL, and installing that same
+	@# distribution from a local path as well is two URLs for one package,
+	@# which uv refuses outright. That refusal is the same shape as the
+	@# lockfile cycle README.md describes -- the one that made the handover
+	@# test unrunnable inside statemachined -- and it is right: without saying
+	@# which copy wins, a resolver would have to guess.
+	@#
+	@# So this says. The point of this target is the checkouts, and a run that
+	@# quietly fetched the *published* client while building everything else
+	@# from source would answer a question nobody asked.
+	@printf 'statemachined-client @ file://%s\n' "$(abspath $(STATEMACHINED)/client/python)" > .local-overrides.txt
+	@# `daemon/` in both, and statemachined's client is a distribution of its
+	@# own beside it -- the layout every repository in the family now takes
+	@# (contracts/DAEMON_LAYOUT.md). The extras carry what the daemons need;
+	@# nothing is named here that a pyproject already declares.
+	uv pip install --quiet --overrides .local-overrides.txt \
+		-e "$(TRIALD)/daemon[serve]" \
+		-e "$(STATEMACHINED)/daemon[serve,device]" \
+		-e $(STATEMACHINED)/client/python \
+		-e $(VSTIMD)/client/python
 	VSTIMD_BINARY=$(abspath $(VSTIMD))/target/release/vstimd \
 	STATEMACHINED_NATIVE_DEVICE=$(abspath $(STATEMACHINED))/build/statemachined_native_device \
 	uv run --group dev --no-sync pytest -v $(ARGS)
@@ -50,10 +87,11 @@ test-local: ## against local checkouts (VSTIMD, STATEMACHINED, TRIALD)
 # vstimd-client from PyPI, triald's wheel from its release.
 accept: artifacts ## the whole suite on a wired rig, with its daemons running (see WIRING.md)
 	uv sync --quiet --group dev
-	uv pip install --quiet "$$(grep '^vstimd-client' artifacts/requirements.txt)" artifacts/triald-*.whl
+	uv pip install --quiet "$$(grep '^vstimd-client' artifacts/requirements.txt)" \
+		artifacts/triald-*.whl artifacts/statemachined_client-*.whl
 	uv run --group dev --no-sync pytest -v --hardware \
 		--display $(or $(DISPLAY_ADDR),tcp://127.0.0.1:5555) \
-		--executor $(or $(EXECUTOR),http://127.0.0.1:8081) \
+		--executor $(or $(EXECUTOR),127.0.0.1:8081) \
 		$(ARGS)
 
 # Interactive: both explain what they will do and ask first. See WIRING.md.
@@ -67,5 +105,5 @@ lint:
 	uv run --group dev ruff check .
 
 clean:
-	rm -rf .venv artifacts .pytest_cache .ruff_cache
+	rm -rf .venv artifacts .pytest_cache .ruff_cache .local-overrides.txt
 	-docker rmi $(IMAGE)

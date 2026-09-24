@@ -15,13 +15,14 @@ from __future__ import annotations
 
 import dataclasses
 import itertools
+import json
 import time
 from typing import Any
 
 #: Trial ids nothing else in this run will reuse.
 #:
 #: A trial id is the *executor's* key, and an executor on a rig is a daemon that
-#: has been up for weeks: `GET /api/trial/<id>` searches a trace holding every
+#: has been up for weeks: `State/ReadTrialTrace` searches a trace holding every
 #: trial anybody has run. So two tests that both call their trial "1" do not get
 #: a fresh one each -- they get one trial with two results, and the executor
 #: refuses that ("one trial ends once") rather than picking. Found by running
@@ -103,10 +104,11 @@ def upload(executor, graph: dict) -> None:
     upload compiles the named set and puts it on the device. A trial can only
     name a graph the device is holding.
     """
-    stored = executor.put(f"/api/graphs/{graph['name']}", json=graph)
-    assert stored.status_code in (200, 201), stored.text
-    sent = executor.post("/api/session/graphs", json={"graph_names": [graph["name"]]})
-    assert sent.status_code == 200, sent.text
+    # **The graph crosses as text.** statemachined is the only thing that
+    # parses one; a client carrying its own copy of those models would carry a
+    # copy that is right until it is not.
+    executor.client.write_graph(graph["name"], json.dumps(graph))
+    executor.client.upload_graph_set([graph["name"]])
 
 
 @dataclasses.dataclass(frozen=True)
@@ -156,6 +158,12 @@ def run_one_trial(
     first_frame = display_connection.system.wait_for_frames(0).frame_count
     observer.open_window(first_frame=first_frame)
 
+    # **Taken before the trial is armed**, because the subscription is opened
+    # after it: a 40 ms trial ends before a late subscriber is watching, and a
+    # stream that started "from now" would then wait for a result that has
+    # already gone past. The ring is what makes reading from a mark possible.
+    before_arming = executor_client.mark()
+
     executor.configure(
         TrialConfiguration(
             trial_id=trial_id,
@@ -168,7 +176,7 @@ def run_one_trial(
     # Observed, not waited on: the executor published and moved on, and this side
     # is the one holding a deadline. Subscribing is opening the stream; nothing
     # on the far end is holding the trial for anybody.
-    with executor_client.trace_stream() as messages:
+    with executor_client.trace_stream(since=before_arming) as messages:
         if while_running is not None:
             while_running()
         finished = next(executor.finished_trials(messages))
@@ -190,11 +198,15 @@ def run_one_trial(
 def line_levels(executor_client) -> dict[str, bool]:
     """Every named line and whether it is high now, as the device reports it.
 
-    `GET /api/device/lines` is the only read-back there is: nothing can sense a
-    pin directly, so this is the device's own `io` word resolved against the line
+    `Device/ReadLines` is the only read-back there is: nothing can sense a pin
+    directly, so this is the device's own `io` word resolved against the line
     map. It is what lets a test check that a graph's line numbers reach the pins
     somebody actually wired.
+
+    `is_high_now` is **absent** rather than false when nothing is attached —
+    there is no read-back path from a pin — so `None` reads as low here and the
+    caller that cares about the difference asks the device directly.
     """
-    body = executor_client.get("/api/device/lines").json()
-    lines = body.get("input_lines", []) + body.get("output_lines", [])
-    return {line["name"]: bool(line.get("is_high_now")) for line in lines}
+    view = executor_client.read_lines()
+    lines = list(view.input_lines) + list(view.output_lines)
+    return {line.name: bool(line.is_high_now) for line in lines}

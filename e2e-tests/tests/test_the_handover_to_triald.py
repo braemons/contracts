@@ -29,7 +29,7 @@ something triald can read and act on. Keeping them apart keeps this one runnable
 with no vstimd anywhere, which is also the shape of a statemachined-only bench.
 
 **triald as a library, not as a daemon.** `Session` rather than `POST
-/api/trial/next`, which is this suite's idiom and the reason triald ships a
+`Trial/Next`, which is this suite's idiom and the reason triald ships a
 wheel: what crosses the boundary here is the executor's HTTP API, and triald's
 own is triald's suite's business. The refusals that were HTTP status codes in
 the old file are `SessionError` here, and they are the same refusals.
@@ -50,8 +50,11 @@ these tests always get a daemon of their own -- see the `executor` fixture.
 
 from __future__ import annotations
 
+import contextlib
+
 import pytest
 import scenarios
+from statemachined_client import DaemonRefusedTheRequest
 
 
 @pytest.fixture
@@ -98,20 +101,19 @@ def machine(executor):
     """triald's client for the executor, over real HTTP, as it ships."""
     from triald.api.statemachine_executor import StateMachineExecutor
 
-    return StateMachineExecutor(base_url=executor.base_url)
+    return StateMachineExecutor(executor.address)
 
 
 def upload_when_the_device_will_take_it(executor, graph: dict, timeout_s: float = 45.0) -> None:
     """`scenarios.upload`, waiting out a device the daemon thinks is already idle.
 
     **A disagreement between the two, and worth naming rather than hiding.**
-    After `POST /api/trial/cancel` the daemon reports `running: false` and
-    answers a second cancel with `unknown_trial` -- "no such trial is running" --
-    while the device goes on refusing a graph-set upload with `busy`, "a trial is
-    armed or running". Both are the pinned `0.2.0-alpha1`. So a cancel ends the
-    daemon's trial and not the device's, and the next test to touch a shared rig
-    pays for it with an error about a graph, which is the one thing that is not
-    wrong.
+    After a cancel the daemon reports `running: false` and answers a second one
+    with "no such trial is running", while the device goes on refusing a
+    graph-set upload with `busy`, "a trial is armed or running". So a cancel
+    ends the daemon's trial and not the device's, and the next test to touch a
+    shared rig pays for it with an error about a graph, which is the one thing
+    that is not wrong.
 
     Measured against the container's installed packages: the trial ends on its
     own when its graph does, and everything is fine again afterwards -- so this
@@ -122,18 +124,23 @@ def upload_when_the_device_will_take_it(executor, graph: dict, timeout_s: float 
     Delete it when a cancel reaches the device; the one-attempt path is the
     normal one, so this costs nothing until it is needed.
     """
+    import json
     import time
+
+    from statemachined_client import DaemonRefusedTheRequest
 
     deadline = time.monotonic() + timeout_s
     while True:
-        stored = executor.put(f"/api/graphs/{graph['name']}", json=graph)
-        assert stored.status_code in (200, 201), stored.text
-        sent = executor.post("/api/session/graphs", json={"graph_names": [graph["name"]]})
-        if sent.status_code == 200:
+        executor.client.write_graph(graph["name"], json.dumps(graph))
+        try:
+            executor.client.upload_graph_set([graph["name"]])
             return
-        busy = sent.status_code == 409 and "busy" in sent.text
-        if not busy or time.monotonic() > deadline:
-            assert sent.status_code == 200, sent.text
+        except DaemonRefusedTheRequest as refused:
+            # `busy` is the **device's own word**, passed up rather than
+            # paraphrased — which is the whole reason this can be told apart
+            # from a graph that will not compile.
+            if refused.error != "busy" or time.monotonic() > deadline:
+                raise
         time.sleep(0.5)
 
 
@@ -153,6 +160,13 @@ def run_one_trial(executor, session, machine, *, outcome="HIT", graph="handover"
     spec = session.next_trial()
     trial_id = spec.trial_number
 
+    # **The mark is taken before the trial is armed**, and the subscription
+    # opened afterwards starts from it. A 40 ms trial ends before a late
+    # subscriber is watching, and a subscription that instead replayed the ring
+    # from the beginning would hand back the *previous* trial's result -- which
+    # is exactly what happened the first time this ran over the new transport.
+    before_arming = executor.mark()
+
     machine.configure(
         TrialConfiguration(
             trial_id=trial_id,
@@ -164,7 +178,7 @@ def run_one_trial(executor, session, machine, *, outcome="HIT", graph="handover"
 
     # Observed, not waited on by the executor: the daemon published and moved on,
     # and this side is the one holding a deadline.
-    with executor.trace_stream() as messages:
+    with executor.trace_stream(since=before_arming) as messages:
         finished = next(machine.finished_trials(messages))
     assert finished == trial_id
 
@@ -261,7 +275,11 @@ def test_starting_a_trial_the_executor_was_not_armed_for_is_refused(executor, ma
         machine.start(armed_for + 1)
 
     # The executor is still armed for the trial nobody started. Leave it idle.
-    executor.post("/api/trial/cancel", json={"trial_id": armed_for})
+    # Tolerated, because "there is nothing to cancel" is a fine outcome for a
+    # teardown: the rpc refuses `unknown_trial` where the route answered a body
+    # nobody read, which is the better behaviour and a caller's to expect.
+    with contextlib.suppress(DaemonRefusedTheRequest):
+        executor.client.cancel_trial(armed_for)
 
 
 def test_an_outcome_for_the_wrong_trial_is_refused_by_triald(executor, session, machine):
@@ -304,35 +322,30 @@ def test_asking_for_a_trial_the_executor_never_ran_is_refused_by_number(machine)
     assert str(never_ran) in str(refused.value)
 
 
-def test_the_refusal_is_in_the_executors_words_not_trialds_paraphrase(machine):
-    """One description of that API, shipped from there.
+def test_asking_about_a_trial_nobody_ran_says_so_in_triald_s_own_words(machine):
+    """Which words a refusal arrives in, and whose fact it is.
 
-    The message used to be triald's own -- it held a copy of the executor's
-    refusal shape. It now comes through `statemachined.client`, so what reaches
-    the session log is the code statemachined documents (`no_trace_for_trial`)
-    and the field it names.
+    triald once held a copy of the executor's refusal shape; it uses
+    `statemachined-client` now, so an executor's refusal reaches the session log
+    in the code statemachined documents rather than in triald's paraphrase of
+    it. That is the property this test was written for.
 
-    **Skipped against a triald that predates the change**, which the pinned
-    `0.2.0a1` does: bumping `rig_versions.toml` is the deliberate act of saying
-    three versions work together, and it is not this test's job to force one.
-    The capability is asked about rather than the version, because a version
-    comparison here would be a second copy of the same fact.
+    **What it asserts changed with the interface, and the change is the
+    interesting part.** Over HTTP the executor answered 404 `no_trace_for_trial`
+    for a trial it had never heard of, and this test looked for that word. It
+    is an empty list now: the trace ring cannot tell "no such trial" from "a
+    trial whose entries have been overwritten" -- both are the same observation
+    -- so the refusal was claiming to know which. With nothing refused there is
+    nothing to pass up, and the error is triald's own, about triald's rule:
+    **a trial with no result is not an outcome.**
 
-    This is also the assertion that could not be believed while it ran from
-    inside statemachined: the lockfile there pinned a triald from before the
-    fix, and could not be refreshed, so it failed for weeks against a bug that
-    was already gone.
+    So the executor's words are still tested, by
+    `test_a_graph_the_executor_does_not_have_is_refused_by_name`, where there
+    really is a definite negative answer to give.
     """
-    from triald.api import statemachine_executor
     from triald.executor import ExecutorError
-
-    if not hasattr(statemachine_executor, "StatemachinedClient"):
-        pytest.skip(
-            "this triald describes statemachined's API itself rather than using "
-            "`statemachined.client`, so its refusals are its own words"
-        )
 
     with pytest.raises(ExecutorError) as refused:
         machine.outcome_of(scenarios.unique_trial_id())
 
-    assert "no_trace_for_trial" in str(refused.value)
+    assert "published no result" in str(refused.value)

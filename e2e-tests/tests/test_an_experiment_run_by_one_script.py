@@ -70,7 +70,7 @@ def experiment(display, executor, say):
     with Experiment(
         renderer_address=display["address"],
         event_port=display["event_port"],
-        executor_url=executor.base_url,
+        executor_address=executor.address,
         seed=20260914,
     ) as running:
         yield running
@@ -110,7 +110,7 @@ def test_a_session_run_as_a_program_leaves_a_record_of_every_trial(
             "--event-port",
             str(display["event_port"]),
             "--executor",
-            executor.base_url,
+            executor.address,
             "--trials",
             str(trials),
             "--first-trial-id",
@@ -191,7 +191,7 @@ def test_the_script_leaves_the_rig_as_it_found_it(display, executor, tmp_path):
             "--event-port",
             str(display["event_port"]),
             "--executor",
-            executor.base_url,
+            executor.address,
             "--trials",
             "2",
             "--first-trial-id",
@@ -207,8 +207,7 @@ def test_the_script_leaves_the_rig_as_it_found_it(display, executor, tmp_path):
     with Connection(display["address"], recv_timeout_s=10.0) as renderer:
         assert {s.name for s in renderer.system.list_stimuli()} == before
         assert renderer.conditions.active == 0
-    state = executor.get("/api/state").json()
-    assert not state["running"]
+    assert not executor.client.read_state().running
     # And the device takes a new graph set, which it refuses while armed.
     scenarios.upload(executor, scenarios.timed_graph("after-the-script"))
 
@@ -230,7 +229,7 @@ def test_the_script_cancels_a_trial_mid_window_and_the_session_carries_on(experi
 
     def cancel_once_the_window_is_open(running: Experiment, trial: PlannedTrial) -> None:
         deadline = time.monotonic() + 5
-        while running.machine.http.get("/api/state").json().get("state_name") != "Window":
+        while running.machine.client.read_state().state_name != "Window":
             assert time.monotonic() < deadline, "the trial never reached its window"
             time.sleep(0.02)
         running.cancel()
@@ -313,7 +312,7 @@ def test_the_same_seed_plans_the_same_session(display, executor):
         running = Experiment(
             renderer_address=display["address"],
             event_port=display["event_port"],
-            executor_url=executor.base_url,
+            executor_address=executor.address,
             seed=seed,
         )
         try:

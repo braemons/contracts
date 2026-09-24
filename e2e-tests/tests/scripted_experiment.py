@@ -12,10 +12,11 @@ Both daemons are supposed to be fully usable that way -- they are participants
 that know nobody, so a script is as good a commander as triald is -- and until
 this file nothing checked that they are.
 
-**It imports no daemon and no test.** `vstimd-client` for the renderer, httpx and
-websockets for statemachined's HTTP API and trace stream, which is what a
-script's author has when neither triald nor statemachined's own client is
-installed. So it is also the check that statemachined's API is usable raw.
+**It imports no daemon and no test.** `vstimd-client` for the renderer and
+`statemachined-client` for the state machine and its trace stream — the two
+client libraries a script's author installs when triald is not in the picture.
+So it is also the check that both APIs are usable by somebody who is not one of
+these daemons.
 
 **The paradigm.** A detection task with catch trials, on the rig `WIRING.md`
 describes:
@@ -54,9 +55,6 @@ import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
-
-import httpx
-from websockets.sync.client import connect as open_websocket
 
 #: The lines this paradigm drives and reads. The script refuses to run on a rig
 #: whose line map does not name them, rather than uploading graphs that do.
@@ -111,75 +109,136 @@ class ExperimentError(RuntimeError):
     """The rig refused something, in the daemon's own words."""
 
 
-# ── statemachined, over its HTTP API ──────────────────────────────────────────
+# ── statemachined, over its gRPC API ──────────────────────────────────────────
+
+
+def flattened(entry) -> dict:
+    """One published trace entry as the flat dict this script reads.
+
+    statemachined's ring holds flat records -- `kind`, `trial_id`, `outcome`,
+    `state_name` in one dict -- and its wire type names four of those and
+    carries the rest in `payload`, because the set differs per kind and
+    protobuf has no type for "and some other things". Putting them back
+    together is the whole of this function.
+
+    The named fields win over the payload: a payload carrying a `trial_id` of
+    its own would otherwise decide which trial an entry belonged to.
+    """
+    return {
+        **entry.payload,
+        "entry_number": entry.entry_number,
+        "kind": entry.kind,
+        "trial_id": entry.trial_id,
+    }
 
 
 class StateMachine:
-    """The five calls a script needs, and the trace stream."""
+    """The five calls a script needs, and the trace stream.
 
-    def __init__(self, base_url: str, timeout_s: float = 10.0) -> None:
-        self.base_url = base_url.rstrip("/")
-        self.http = httpx.Client(base_url=self.base_url, timeout=timeout_s)
+    A thin adapter over `statemachined-client` rather than a client of its own.
+    It exists for the script's *vocabulary* -- `store_graph`, `trace_for` -- and
+    for the two places a script must wait rather than fail; everything else is
+    the published client doing the work.
+
+    **It was httpx and a WebSocket.** statemachined's interface is
+    `proto/statemachined/v1/` now and the routes are gone.
+    """
+
+    def __init__(self, address: str, timeout_s: float = 10.0) -> None:
+        from statemachined_client import StatemachinedClient
+
+        self.address = address
+        self.client = StatemachinedClient(address)
+        self.client.wait_until_ready(timeout_s=timeout_s)
 
     def close(self) -> None:
-        self.http.close()
-
-    def _call(self, method: str, path: str, doing: str, **kwargs) -> Any:
-        response = self.http.request(method, path, **kwargs)
-        if response.status_code >= 400:
-            raise ExperimentError(f"{doing}: {response.status_code} {response.text}")
-        return response.json()
+        self.client.close()
 
     def line_names(self) -> set[str]:
-        lines = self._call("GET", "/api/device/lines", "reading the line map")
-        return {line["name"] for kind in ("input_lines", "output_lines") for line in lines[kind]}
+        view = self.client.read_lines()
+        return {line.name for line in list(view.input_lines) + list(view.output_lines)}
 
     def store_graph(self, graph: dict) -> None:
-        self._call("PUT", f"/api/graphs/{graph['name']}", f"storing {graph['name']}", json=graph)
+        # As text: the daemon is the only thing that parses a graph, and a
+        # script carrying its own copy of those models would carry a copy that
+        # is right until it is not.
+        self.client.write_graph(graph["name"], json.dumps(graph))
 
-    def upload_graph_set(self, names: list[str], timeout_s: float = 30.0) -> dict:
+    def upload_graph_set(self, names: list[str], timeout_s: float = 30.0):
         """Put the set on the device, waiting out a trial that is still ending.
 
         A cancelled trial is over for the daemon a moment before it is over for
-        the device, which answers `busy` in between.
+        the device, which answers `busy` in between -- the **device's** own
+        word, passed up rather than paraphrased, which is what makes it
+        possible to tell from a graph that will not compile.
         """
+        from statemachined_client import DaemonRefusedTheRequest
+
         deadline = time.monotonic() + timeout_s
         while True:
-            response = self.http.post("/api/session/graphs", json={"graph_names": names})
-            if response.status_code == 200:
-                return response.json()
-            if "busy" not in response.text or time.monotonic() > deadline:
-                raise ExperimentError(f"uploading {names}: {response.status_code} {response.text}")
+            try:
+                return self.client.upload_graph_set(names)
+            except DaemonRefusedTheRequest as refused:
+                if refused.error != "busy" or time.monotonic() > deadline:
+                    raise ExperimentError(f"uploading {names}: {refused}") from refused
             time.sleep(0.25)
 
-    def configure(self, trial_id: int, graph: str, cap_ms: int, patches: list[dict]) -> dict:
-        body = {
-            "trial_id": trial_id,
-            "graph": graph,
-            "cap_milliseconds": cap_ms,
-            "distribution_patches": patches,
-        }
-        return self._call("POST", "/api/trial/configure", f"arming trial {trial_id}", json=body)
+    def configure(self, trial_id: int, graph: str, cap_ms: int, patches: list[dict]):
+        from statemachined_client import DistributionPatch
 
-    def start(self, trial_id: int) -> dict:
-        body = {"trial_id": trial_id}
-        return self._call("POST", "/api/trial/start", f"starting trial {trial_id}", json=body)
+        return self.client.configure_trial(
+            trial_id,
+            graph=graph,
+            cap_milliseconds=cap_ms,
+            distribution_patches=[DistributionPatch(**patch) for patch in patches],
+        )
 
-    def cancel(self, trial_id: int) -> dict:
-        body = {"trial_id": trial_id}
-        return self._call("POST", "/api/trial/cancel", f"cancelling trial {trial_id}", json=body)
+    def start(self, trial_id: int):
+        return self.client.start_trial(trial_id)
+
+    def cancel(self, trial_id: int):
+        """End a trial, or say why it could not be ended.
+
+        **"There is nothing to cancel" is a refusal now**, where the route
+        answered a body nobody read: the rpc says `unknown_trial` when no trial
+        by that id is armed or running, which is the honest answer to a script
+        whose deadline expired a moment after the trial ended on its own.
+
+        It arrives as this script's own exception, like every other refusal
+        here, so a caller that does not care can suppress one kind rather than
+        learn another library's.
+        """
+        from statemachined_client import DaemonRefusedTheRequest
+
+        try:
+            return self.client.cancel_trial(trial_id)
+        except DaemonRefusedTheRequest as refused:
+            raise ExperimentError(f"cancelling trial {trial_id}: {refused}") from refused
 
     def trace_for(self, trial_id: int) -> list[dict]:
-        return self._call("GET", f"/api/trace/trial/{trial_id}", f"reading trial {trial_id}")[
-            "entries"
-        ]
+        return [flattened(entry) for entry in self.client.read_trial_trace(trial_id)]
+
+    def mark(self) -> int:
+        """The entry number to start a subscription after, to see only what
+        happens from now on."""
+        return self.client.read_state().newest_trace_entry_number + 1
 
     @contextlib.contextmanager
-    def trace_stream(self) -> Iterator[Any]:
-        rest = self.base_url.split("://", 1)[-1]
-        scheme = "wss" if self.base_url.startswith("https") else "ws"
-        with open_websocket(f"{scheme}://{rest}/api/trace/stream?observer=script") as socket:
-            yield socket
+    def trace_stream(self, since: int, deadline_s: float) -> Iterator[Any]:
+        """The trace from `since` onwards, named so the rig can see who watches.
+
+        **`deadline_s` is the script's patience, and it is the stream's
+        deadline.** A gRPC iterator has no per-read timeout, so a subscription
+        with a longer deadline than the caller's patience blocks past it — and
+        a script that meant to give up after 1.5 s instead waits for the
+        board's own trial cap and records the wrong reason for the ending.
+        Giving the call the deadline is what makes the two the same number.
+        """
+        subscription = self.client.watch_trace(
+            since, observer="script", timeout_s=deadline_s
+        )
+        with subscription:
+            yield subscription
 
 
 # ── The record ────────────────────────────────────────────────────────────────
@@ -231,7 +290,7 @@ class Experiment:
         *,
         renderer_address: str,
         event_port: int,
-        executor_url: str,
+        executor_address: str,
         window_ms: int = 300,
         seed: int | None = None,
     ) -> None:
@@ -241,7 +300,7 @@ class Experiment:
         self.seed = seed if seed is not None else random.randrange(2**31)
         self.rng = random.Random(self.seed)
         self.window_ms = window_ms
-        self.machine = StateMachine(executor_url)
+        self.machine = StateMachine(executor_address)
         self.renderer = Connection(renderer_address, recv_timeout_s=10.0)
         host = renderer_address.split("://", 1)[-1].rsplit(":", 1)[0]
         self.events = EventSubscriber(
@@ -364,11 +423,14 @@ class Experiment:
         patches = [{"name": "foreperiod", "duration_ms": trial.foreperiod_ms}]
         if trial.window_ms is not None:
             patches.append({"name": "window", "duration_ms": trial.window_ms})
+        # Before arming, so the subscription opened below misses nothing even
+        # though it is opened after.
+        before_arming = self.machine.mark()
         self.machine.configure(
             trial.trial_id, trial.graph, cap_ms=int(deadline_s * 2000), patches=patches
         )
 
-        with self.machine.trace_stream() as stream:
+        with self.machine.trace_stream(before_arming, deadline_s) as stream:
             on = self.renderer.conditions.set(trial.condition).frame_count
             self.machine.start(trial.trial_id)
             self._in_flight = trial.trial_id
@@ -414,20 +476,38 @@ class Experiment:
         return record
 
     def cancel(self) -> None:
-        """End the trial in flight, from anywhere -- a hook, a thread, a key."""
+        """End the trial in flight, from anywhere -- a hook, a thread, a key.
+
+        A trial that ended between the decision to stop it and the call is not
+        an error: a stop button pressed a moment too late has still stopped the
+        session, which is what the person pressing it meant.
+        """
         if self._in_flight is not None:
-            self.machine.cancel(self._in_flight)
+            with contextlib.suppress(ExperimentError):
+                self.machine.cancel(self._in_flight)
 
     def _wait_for_end(self, stream, trial_id: int, deadline_s: float) -> bool:
-        deadline = time.monotonic() + deadline_s
-        while (left := deadline - time.monotonic()) > 0:
-            try:
-                message = stream.recv(timeout=left)
-            except TimeoutError:
-                return False
-            entry = json.loads(message)
-            if entry.get("kind") == "trial_result" and entry.get("trial_id") == trial_id:
-                return True
+        """Read the subscription until this trial ends, or until we give up.
+
+        **The deadline is the script's**, which is the rule the whole API is
+        built on: nothing on the rig waits for a subscriber or holds a trial
+        for one, and only the side that knows a trial is in flight can tell
+        "not yet" from "never".
+
+        The stream's own gRPC deadline is far longer, so what ends the wait
+        here is this clock rather than the transport's.
+        """
+        from statemachined_client import DaemonRefusedTheRequest
+
+        try:
+            for entry in stream:
+                if entry.kind == "trial_result" and entry.trial_id == trial_id:
+                    return True
+        except DaemonRefusedTheRequest as refused:
+            # The stream's deadline is this script's patience, so running out
+            # of it *is* the answer: the trial did not end in time.
+            if refused.status != "deadline_exceeded":
+                raise
         return False
 
     def _trace_after_end(self, trial_id: int, timeout_s: float = 5.0) -> list[dict]:
@@ -473,7 +553,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--renderer", default="tcp://127.0.0.1:5555")
     parser.add_argument("--event-port", type=int, default=5556)
-    parser.add_argument("--executor", default="http://127.0.0.1:8081")
+    # statemachined's **gRPC** port, which is one above the port its panels are
+    # served on. A person types 8081 into a browser; a client connects to 8082.
+    parser.add_argument("--executor", default="127.0.0.1:8082")
     parser.add_argument("--trials", type=int, default=12)
     parser.add_argument("--first-trial-id", type=int, default=1)
     parser.add_argument("--seed", type=int, default=None)
@@ -497,7 +579,7 @@ def main(argv: list[str] | None = None) -> int:
         Experiment(
             renderer_address=args.renderer,
             event_port=args.event_port,
-            executor_url=args.executor,
+            executor_address=args.executor,
             window_ms=args.window_ms,
             seed=args.seed,
         ) as experiment,
