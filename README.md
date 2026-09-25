@@ -8,6 +8,7 @@ have to agree on, and the end-to-end tests that check they do.
 | [vstimd](https://github.com/braemons/vstimd) | renders stimuli; publishes what it drew on a PUB socket |
 | [statemachined](https://github.com/braemons/statemachined) | runs a trial's state machine; publishes what it did on its trace |
 | [triald](https://github.com/braemons/triald) | decides what a trial is and records its outcome |
+| [mousewheeld](https://github.com/braemons/mousewheeld) | reads a running wheel; writes its position to vstimd's `vinput` segment and serves it over gRPC |
 | [console](https://github.com/braemons/console) | shows a rig on one screen, and decides nothing |
 
 This repo runs nothing on a rig. It holds the contract the daemons meet at.
@@ -18,7 +19,8 @@ This repo runs nothing on a rig. It holds the contract the daemons meet at.
 |---|---|---|
 | **vstimd** | nobody | renders; broadcasts what it saw |
 | **statemachined** | nobody | runs a trial; writes what it did to its trace |
-| **triald** | both | commands them, and subscribes to what they publish |
+| **mousewheeld** | nobody | reads the wheel; writes shared memory vstimd reads |
+| **triald** | vstimd, statemachined | commands them, and subscribes to what they publish (mousewheeld not yet) |
 | **console** | all of them | shows them on one screen |
 
 **A participant publishes what it observed and commands nobody; whatever runs
@@ -33,9 +35,9 @@ only the consumer that is waiting can tell "not yet" from "never".
 |---|---|
 | [`INTERACTIONS.md`](INTERACTIONS.md) | the catalogue: every message between two daemons, its direction and payload, and what is still open |
 | [`DAEMON_LAYOUT.md`](DAEMON_LAYOUT.md) | the shape every daemon repository takes, and the rule that its public interface is hand-authored protobuf |
-| [`vendored/proto/`](vendored/proto/) | every daemon's `proto/`, for reading side by side — plus `braemons/v1/`, which is **canonical here** because it belongs to no one daemon. Today that is the `.tdr` outcome taxonomy, which statemachined reports in and triald records in |
+| [`vendored/proto/`](vendored/proto/) | `braemons/v1/`, which is **canonical here** because it belongs to no one daemon. Today that is the `.tdr` outcome taxonomy, which statemachined reports in and triald records in. Each daemon's own `proto/` is in its own repository |
 | `check_vendored_copies.py` | are the daemons' copies of `braemons/v1/` still this one? `--fix` syncs them |
-| [`e2e-tests/`](e2e-tests/README.md) | end-to-end tests across all three daemons, and the pinned releases they run against |
+| [`e2e-tests/`](e2e-tests/README.md) | end-to-end tests across the daemons, and the pinned releases they run against. mousewheeld runs in `make test-local` only, until a triald release carries `mousewheel_zone_set` |
 | [`e2e-tests/WIRING.md`](e2e-tests/WIRING.md) | the physical rig the hardware tests assume, and how to run them on it |
 
 ## Two halves

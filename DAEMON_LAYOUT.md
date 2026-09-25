@@ -89,9 +89,10 @@ works. mousewheeld's `client/web/build_daemon_api_client.mjs` is the reference.
 
 **`client/` is a sibling of `daemon/`, never a subdirectory of it.** A person who
 wants to talk to a rig should not have to install the thing that runs one.
-statemachined is the cautionary case: its client lives inside the daemon package
-today, so `pip install` for a one-line script pulls in a serial driver, a graph
-store and a web server.
+statemachined was the cautionary case: its client lived inside the daemon
+package, so `pip install` for a one-line script pulled in a serial driver, a
+graph store and a web server. It is `client/python/` (`statemachined-client`)
+now, and its dependencies are grpcio and protobuf.
 
 ### Names are long, and say what the thing is
 
@@ -103,8 +104,9 @@ for what it is, in full, and an abbreviation is not a name.**
 
 Three rules that follow, and each was learned by getting it wrong:
 
-* **A client is `<Daemon>Client`** — `MousewheeldClient`, and `TrialdClient`
-  and `StatemachinedClient` when they come. Not `Rig`: a rig has four daemons
+* **A client is `<Daemon>Client`** — `VstimdClient`, `MousewheeldClient`,
+  `StatemachinedClient`, `TrialdClient`. vstimd's was `Connection`, from
+  before the rule; `vstimd-client` 0.3.0a1 on PyPI still spells it that way. Not `Rig`: a rig has four daemons
   on it, and a script that talks to two of them has to be able to say which is
   which. Not `Client` either, for the same reason at a call site.
 * **A type that will be imported into somebody else's namespace carries its
@@ -169,36 +171,39 @@ owns the tree under it; a client asks for `corridor`, not
 a path that means something different on the next rig, and it is also how an
 API becomes a way to read `/etc/shadow`.
 
-**A rig config is never written back from the API.** mousewheeld patches
-`rate_hz` and two neighbours, statemachined patches the device target; both
-last until the daemon restarts and neither touches `/etc/braemons`. That file
+**A rig config is never written back from the API.** statemachined patches
+the device target, and the patch lasts until the daemon restarts without
+touching `/etc/braemons`. mousewheeld does not keep to this yet: see *What did
+not match* below. That file
 belongs to whoever set the box up: an API that rewrote it would make the
 running daemon the authority on what the hardware is, and would silently
 diverge from the conffile the next upgrade compares against.
 
-#### What does not match this yet
+#### What did not match, and what still does not
 
-Writing it down found four things, three of them the kind this rule exists to
-prevent:
+Writing it down found four things, and all four are fixed:
 
-* **statemachined's rig config flag is `--config`.** The other three are
-  `--rig-config`, and bare `config` is the one spelling this rule forbids.
-* **triald's `--config` is the *session* config.** So the same flag name means
-  the box on one daemon and the experiment on another, which is exactly the
-  confusion the rule is about. It wants to be `--session-config`.
-* **mousewheeld's storage directory defaults to `/var/lib/mousewheeld`**, not
-  `/var/lib/braemons/mousewheeld`. triald's unit file already carries the
-  reason in a comment: every braemons daemon keeps its state under one parent,
-  so a rig has one directory to back up.
-* **triald has the flag and not the file.** `--config` and the rig config's
-  `session_config` both exist; `_load_config` raises "not implemented yet", the
-  daemon runs a built-in demo experiment, and a set written over the API lives
-  in memory and does not survive a restart. This is the one gap that is a
-  missing *thing* rather than a misspelt name, and a daemon whose experiment
-  cannot be written down is a daemon whose sessions cannot be reproduced.
+* ~~statemachined's rig config flag was `--config`~~ — it is `--rig-config`.
+  `--config` is still accepted, hidden, only because the e2e suite pins a
+  0.3.0-alpha1 binary that knows no other spelling; it goes when that pin moves.
+* ~~triald's `--config` was the *session* config~~ — it is `--session-config`.
+* ~~mousewheeld's storage directory defaulted to `/var/lib/mousewheeld`~~ — it
+  is `/var/lib/braemons/mousewheeld`, like every other daemon's.
+* ~~triald had the flag and not the file~~ — the session config is a JSON file,
+  read strictly by `session_config_file.py` and described by
+  `docs/reference/session-config.schema.json`, with the demo experiment as
+  `examples/session-config.json`. A set or a setting changed over the API is
+  still not written back to it.
 
-None of the three names is load-bearing anywhere yet — nothing is shipped or
-used (§5) — so each is a rename rather than a migration. The fourth is work.
+And one that the rule below forbids and the code does:
+
+* **mousewheeld writes its rig config back to `/etc/braemons`.**
+  `Config/PatchConfig`, `Calibration/ReplaceCalibration` and
+  `Calibration/ApplyMeasurement` all end in `save_config()`, and its unit grants
+  `ReadWritePaths=/etc/braemons` for it. The calibration is the hard case: it
+  is measured over the API, it is a fact about the box, and it has to survive a
+  restart. Where it lives instead — a file under `/var/lib/braemons/mousewheeld`
+  that overrides the conffile's, most likely — is undecided.
 
 ## 2.1 Protobuf on every wire — the rule, and where the family stands
 
@@ -317,7 +322,11 @@ because that is the family's rule that a quantity names its unit.
 **What is lost is `curl`.** That was the last objection standing and it was
 traded deliberately: every daemon ships a client library and a CLI, and those
 are the supported way in. A rig at three in the morning is reached with the
-daemon's own CLI rather than by hand-writing a request.
+daemon's own CLI rather than by hand-writing a request — **once the CLI is on
+the rig, which today it is not**: no daemon's `.deb` installs its client, so
+the CLIs (`vstimd-client`, `mousewheel`, `statemachinectl`, `trialctl`, four
+spellings) are a `pip install` away. Packaging them, and one spelling, is
+open.
 
 **A browser reaches a daemon through gRPC-Web**, translated in process by
 `tonic-web` — no proxy, no second daemon, no second port. The panels get a
@@ -345,8 +354,8 @@ and the family's ports were allocated one per daemon before any of them did:
 
 | daemon | panels | gRPC | ports |
 |---|---|---|---|
-| **vstimd** | 8080 | same (`tonic-web`) | one |
-| **statemachined** | 8081 | 8082 | **two** |
+| **vstimd** | 8080 | — (ZMQ 5555, events 5556; the browser over a WebSocket on 8080) | one HTTP |
+| **statemachined** | 8081 | same (`tonic-web`) | one |
 | **mousewheeld** | 8083 | same (`tonic-web`) | one |
 | **triald** | 8420 | 8421 | **two** |
 
@@ -355,10 +364,17 @@ it and a rig running both on their defaults collided. It moved rather than
 statemachined because it is the one that needs a single port, and because 8081
 is what a console's `rigs.json` and every packaged unit file already hold.
 
+statemachined has been Rust since 0.3 and serves everything on 8081. It kept
+answering on 8082 as well through the cutover, so that no client had to change
+the day the daemon did; that second port is gone, `statemachined-client` dials
+8081, and 8082 is free. 0.3.0-alpha1, which the e2e suite pins, still answers
+on both, which is harmless.
+
 **The rule this leaves**: a Python daemon's port and the one above it are both
 spoken for, so no two daemons may be given adjacent numbers unless both are
 Rust. vstimd and statemachined are adjacent and that is safe only for as long
-as vstimd stays Rust; if it ever needs two, it moves, not statemachined.
+as vstimd needs one; if it ever needs two, it moves, not statemachined.
+triald is the only Python daemon left.
 
 ### The three layers, and the rule
 
@@ -431,9 +447,9 @@ seam, which is the one worth checking.
 
 ## 3. Where the proto lives — and why not one repo
 
-Each daemon's `proto/` is in its own repository, and `contracts/vendored/proto/`
-holds a copy of all four for reading side by side — plus `braemons/v1/`, which
-is canonical here because it belongs to no one daemon.
+Each daemon's `proto/` is in its own repository, and only there.
+`contracts/vendored/proto/` holds `braemons/v1/`, which is canonical here
+because it belongs to no one daemon.
 
 This is the arrangement `outcomes.json` had before it became a proto, for the
 same reason: a single shared
@@ -475,12 +491,16 @@ additive-only promise from a paragraph into something that fails a build.
 
 ## 5. What each repository moves
 
-| | today | move |
-|---|---|---|
-| **vstimd** | `server/`, `client/{python,web}`, `proto/` | `server/` → `daemon/`. Nothing else; it is the reference. |
-| **mousewheeld** | `daemon/`, `web/`, `rotary-encoder/` | `web/` → `client/web`; `rotary-encoder/` → `firmware/`; add `proto/`, `client/python/`, and a LICENSE — it has none |
-| **statemachined** | `python/` (daemon, client, device and model fused), `firmware/` | split `python/` → `daemon/` + `client/python/`; `daemon/web/elements` → `client/web`; add `proto/` |
-| **triald** | `src/`, `tests/` | `src/` → `daemon/src`; `src/triald/web` → `client/web`; add `proto/`, `client/python/`; `dev/API.md` → `docs/reference/api.md` |
+The moves are done: every daemon is `daemon/`, `client/{python,web}` and
+`proto/`, with `firmware/` where there is a board. vstimd's `server/` and
+statemachined's `daemon-rs/` were the last two. What still differs is tidiness,
+not the rule:
+
+| | |
+|---|---|
+| **vstimd** | its `.deb` comes from cargo-deb rather than nfpm |
+| **mousewheeld** | its unit and nfpm files sit directly in `packaging/` rather than in `packaging/systemd/` and friends |
+| **statemachined** | the firmware's host tests are `tests/` and its `platformio.ini` is at the root rather than in `firmware/` |
 
 Nothing in this family is shipped or used anywhere yet, so all of this is a
 rename rather than a migration. There is no compatibility window to keep and no
@@ -488,8 +508,9 @@ deprecation to stage.
 
 ## 6. What is deliberately not uniform
 
-- **Language.** Two daemons are Rust and two are Python, and that follows the
-  work: a renderer and a serial link are not a trial policy.
+- **Language.** Three daemons are Rust and one, triald, is Python, and that
+  follows the work: a renderer and a serial link are not a trial policy.
+  statemachined was Python until 0.3 (`statemachined/dev/RUST_PORT.md`).
 - **Firmware.** Only statemachined and mousewheeld have a board.
 - **Transport beyond the control plane.** §7's rule — the transport follows the
   consumer, not the family — is unchanged, and the *encoding* is not optional:
@@ -500,17 +521,17 @@ deprecation to stage.
 
 ## 7. Open decisions
 
-- **statemachined's `device/`** is a direct serial driver its own docstring calls
-  *"one of the two ways to drive a rig from Python"* — a public library that is
-  not a daemon client, sharing `model/` and `graph_set_compiler.py` with the
-  daemon. It goes into `client/python` as the direct-attach path, or into a
-  `lib/python/` of its own. **Undecided.**
-- **Whether the served OpenAPI document survives.** The proposal is that it does
-  not: serve a `FileDescriptorSet` at `/api/descriptor.pb` for generators and
-  keep the hand-written `docs/reference/api.md` for people. This supersedes §7's
-  closing suggestion to commit the generated OpenAPI document — that was the
-  right answer while the schemas could only be *generated from* FastAPI, and the
-  point of this document is that they no longer are.
+- ~~**statemachined's `device/`**~~ **Decided by deletion.** It was a direct
+  serial driver in Python, sharing `model/` with the Python daemon. Both went
+  with the Rust port: a board is reached through the daemon, and the native
+  device build is the far end for tests and a bench.
+- ~~**Whether the served OpenAPI document survives.**~~ **It does not.** No
+  daemon serves one. statemachined and mousewheeld answer gRPC server
+  reflection instead, which is what `grpcurl` and a generator want, and so
+  does triald's gRPC port (v1alpha only: that is what grpcio-reflection
+  serves, and grpcurl falls back to it). `docs/reference/api.md` stays the document for people.
+- ~~**statemachined's second port**~~ **Dropped.** The daemon serves 8081
+  only, and its client dials 8081.
 
 ## 8. Order of work
 
@@ -523,7 +544,7 @@ deprecation to stage.
 5. **statemachined** — 46 rpcs, and `model/` has to be teased apart into wire,
    file and runtime before a wire type can exist.
 6. Firmware, with nanopb: mousewheeld's board first, then statemachined's.
-   **Both written, neither merged to `main` yet** — see §2.1.
+   **Both done and on `main`** — see §2.1.
 
 mousewheeld goes first because it is the newest, has no client to break, and is
 in the same language as vstimd, whose prost and pbjson toolchain is already
