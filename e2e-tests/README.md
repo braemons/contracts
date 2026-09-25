@@ -1,8 +1,8 @@
 # e2e-tests/ — the tests that belong to no daemon
 
 The dynamic half of this repository. `INTERACTIONS.md` writes down what the
-daemons promise each other and `check_outcomes.py` proves each repo's sources
-still say it; these tests run all three and watch them do it.
+daemons promise each other and each repo's `make check-proto` holds its sources
+to its vendored `braemons/v1/`; these tests run all three and watch them do it.
 
 vstimd renders. statemachined runs a trial's state machine. triald decides what a
 trial is and what its outcome was. Each has its own suite, and each of those
@@ -59,19 +59,33 @@ about the thing installed on a rig.
 deliberate act of saying these three versions work together, which is the only
 claim this repo makes.
 
-### The bootstrap gap, closed
+### What the pins say
 
-This section used to explain why none of the three shipped what these tests
-need. All of them do now, and `make test` is green on nothing but published
-artifacts:
+`make test` is green on nothing but published artifacts, all of them speaking
+protobuf on every wire (`../DAEMON_LAYOUT.md` §2.1):
 
 | | release | what it publishes for this suite |
 |---|---|---|
-| vstimd | `v0.2.0-alpha1` | the server `.deb`, and `vstimd-client 0.2.0a1` on PyPI — the first client with an event stream |
-| statemachined | `v0.2.0-alpha1` | the daemon `.deb`, carrying the firmware compiled for the host at `libexec/statemachined-device` |
-| triald | `v0.2.0-alpha1` | the daemon `.deb`, **and a wheel** — these tests import triald rather than run it |
+| vstimd | `v0.3.0-alpha3` | the server `.deb`, and `vstimd-client 0.3.0a2` on PyPI |
+| statemachined | `v0.3.0-alpha2` | the Rust daemon's `.deb` (`/usr/bin/statemachined`), `statemachined-native-device-amd64` — the firmware compiled for the host, the container's board-less far end — and the `statemachined_client` wheel this suite drives it through |
+| triald | `v0.3.0-alpha3` | the daemon `.deb`, **and a wheel** — these tests import triald rather than run it |
+| mousewheeld | `v0.3.0-alpha2` | `braemons-mousewheeld`, whose `/usr/bin/mousewheeld` the tests run with `--simulate`, and the `mousewheeld_client` wheel |
 
-Fixtures still resolve in three steps, and the order is the point:
+The 0.2 pins before these could not pass: statemachined `v0.2.0-alpha1` served
+HTTP and published no client, and the suite had already moved to the gRPC
+interface rather than keep a green tick over routes nothing served any more.
+
+**The container waits for the board, not only for the daemon.** statemachined
+greets its device once at startup and does not retry a refused connection, so
+`entrypoint.sh` starts the native device, waits for it to listen, and waits
+again until the daemon reports `device_connected` before running a test.
+Without that, a daemon that won the race served the whole run with no board.
+
+`make test-local` answers the other question — whether the checkouts work
+together — by building statemachined's daemon and native device in that
+checkout and putting them first on PATH.
+
+Fixtures resolve in three steps, and the order is the point:
 
 1. **The pinned release artifact** — the intended path, and the only one that
    tests what an operator installs.
@@ -98,16 +112,31 @@ is on the wire is an operator's step, and `container/entrypoint.sh` does it.
 
 ### Nothing here imports a daemon
 
-Except the two libraries an experiment script imports: `triald` and
-`vstimd-client`. The daemons themselves are **processes on ports**, started the
-way their service units start them and talked to over HTTP and ZeroMQ.
+Except the three libraries an experiment script imports: `triald`,
+`vstimd-client` and `statemachined-client`. The daemons themselves are
+**processes on ports**, started the way their service units start them and
+talked to over gRPC and ZeroMQ.
 
 That was not true at first. The executor fixture built statemachined in-process
 with Starlette's `TestClient`, which is how statemachined's own suite tests it — correctly, because there the daemon is the subject. Here it is not:
-what is under test is a rig, and on a rig this daemon is a service on port 8081
-that nothing imports. Reaching into it as a library exercises a path no operator
-has, and it also quietly avoided the real client: `StateMachineExecutor` now runs
-over httpx and a real WebSocket, the way it ships.
+what is under test is a rig, and on a rig this daemon is a service that nothing
+imports. Reaching into it as a library exercises a path no operator has, and it
+also quietly avoided the real client: `StateMachineExecutor` runs over a real
+channel, the way it ships.
+
+**One port.** `statemachined serve --port 8081` serves the panels, gRPC and
+gRPC-Web there. The Python daemon it replaced needed a second port for gRPC,
+one above, because `grpc.aio` owns its port outright; the Rust one kept
+answering there too for the cutover, and no longer does. `--executor` is the
+port a person types into a browser, and it is the port a client dials.
+`contracts/DAEMON_LAYOUT.md` has the family's allocation.
+
+**A subscription carries the ring's backlog.** The WebSocket began at the
+newest entry; `WatchTrace` starts wherever it is told and defaults to the
+beginning, which is right for a subscriber that reconnects and wrong for a test
+watching for something it is about to cause. So every test here takes a mark
+before it arms a trial and subscribes from it — which is also what makes the
+suite correct for a 40 ms trial that ends before anybody is watching.
 
 ## Running it
 
@@ -118,3 +147,11 @@ make test-local   # against local checkouts (VSTIMD, STATEMACHINED, TRIALD)
 ```
 
 From the repository root, `make e2e` does the same.
+
+## mousewheeld
+
+`tests/test_a_zone_set_armed_by_triald.py` runs triald's zone arming (interaction
+D, `INTERACTIONS.md` §3) against a real mousewheeld with `--simulate`: a wheel
+on a thread behind a real pty, so the daemon's link code is what runs. Under
+`make test` that is the pinned `braemons-mousewheeld`; under `make test-local`
+it is the checkout `MOUSEWHEELD` names.

@@ -1,9 +1,11 @@
 # The braemons daemon interactions
 
-> **Status: the shape is settled and half of it is built.** §5.1, §5.2, §8's
-> stage 1 and §9.1 are done — `make e2e-local` here runs one whole trial across
-> both daemons, with triald driving. §6 is not built, and §3C
-> (vstimd) is now an open issue rather than a design here. §3 is a catalogue of
+> **Status: A, B and C are built, over protobuf on every wire.** §5.1, §5.2,
+> §8's stages 1–3 and §9.1 are done — `make e2e` here installs the 0.3 alphas of
+> vstimd, statemachined and triald and runs experiments across all three, with
+> triald driving and with a single script driving; `make e2e-local` adds
+> mousewheeld, armed by triald (D). What is left is mousewheeld's E (§3), the
+> path back into the record, which waits on marks in mousewheeld. §3 is a catalogue of
 > what exists today, with the gaps marked — it is meant to be checked against
 > the code, not trusted.
 >
@@ -13,11 +15,12 @@
 >
 > **Why this file exists.** vstimd's `proto/vstimd/v1/` can be read start to
 > finish and it tells you the whole client-facing surface. Nothing plays that
-> role for the interactions *between* daemons: they are spread across two
-> FastAPI apps, one protobuf tree, a serial protocol and a shared-memory
-> layout, and the only place they were ever written down together is a diagram
-> in three different PLAN.md files. This is the document you read to review
-> them.
+> role for the interactions *between* daemons: they are spread across four
+> `proto/` trees, two board links and two shared-memory layouts, and before
+> this file the only place they were written down together was a diagram in
+> three different PLAN.md files. This is the document you read to review them.
+> (It was two FastAPI apps when this was first written; §3 still says where an
+> interaction used to be a REST route, where that history matters.)
 
 ## 1. Where this lives
 
@@ -45,13 +48,13 @@ in §6. **What it is emphatically not:** a place to put shared code. See §7.
                     ┌──────────────────────────────────────┐
                     │ triald    decides · counts · records │   one session
                     └──┬──────────────┬───────────────┬────┘
-        (A) push trial │   (B) push   │   (C) ask     │
-        HTTP+JSON      │   outcome    │   frame loss  │
-                       ▼   HTTP+JSON  │   ZMQ+proto   ▼
+     (A) configure     │ (B) subscribe│ (C) subscribe │
+        gRPC           │   WatchTrace │   ZMQ PUB     │
+                       ▼   gRPC       │   protobuf    ▼
               ┌────────────────┐◀─────┘        ┌──────────────┐
               │ statemachined  │               │    vstimd    │   always on
               └───────┬────────┘               └──────┬───────┘
-                      │ USB CDC · NDJSON              │
+                      │ USB CDC · protobuf (nanopb)   │
               ┌───────┴────────┐              ┌───────┴────────┐
               │    firmware    │              │  VTL shm ⇄ daqd│
               └───────┬────────┘              └───────┬────────┘
@@ -66,9 +69,10 @@ Three interactions on the slow bus, and their directions are now settled:
 | **B** | statemachined ⇢ triald | **broadcast**, subscribed | every event |
 | **C** | vstimd ⇢ triald | **broadcast**, subscribed | every event |
 
-A fourth participant is designed but unbuilt — mousewheeld, the locomotion
-input, with rows **D**, **E** and **F** in §3. It changes nothing about the
-three above, which is the test the rule is meant to pass.
+A fourth participant is built — mousewheeld, the locomotion input, with rows
+**D**, **E** and **F** in §3 — and F is live, but nothing consumes D or E yet.
+It changes nothing about the three above, which is the test the rule is meant
+to pass.
 
 ### The rule the three now follow
 
@@ -94,11 +98,11 @@ about a consumer that has no name.
 **B is a broadcast, and `triald_client.py` is gone.** statemachined has no
 client, no `triald_base_url`, no copy of triald's schema and no outbound call of
 any kind. Every trial's result goes into its trace with everything else it did,
-and `WS /api/trace/stream` is where anything reads it — lossless, and it names
+and `State/WatchTrace` is where anything reads it — lossless, and it names
 the entries a slow consumer lost rather than handing it a shorter answer that
-looks complete. `GET /api/trace/trial/{id}` recovers any trial exactly.
+looks complete. `State/ReadTrialTrace` recovers any trial exactly.
 
-`triald/src/triald/behaviour.py`'s `BehaviourSource` — `arm()` then a blocking
+`triald/daemon/src/triald/behaviour.py`'s `BehaviourSource` — `arm()` then a blocking
 `result(trial_id)` — stays as the **simulator's** seam and nothing else. On a
 rig, implementing it would mean blocking in a loop asking "is trial 7 done yet"
 for an event that was already published. See §9.1.
@@ -136,23 +140,24 @@ The fast bus carries what must be *timed*; the slow bus carries what must be
 
 ### A — triald configures a trial on statemachined
 
-`POST http://<statemachined>/api/trial/configure` → `/start`
+`statemachined.v1.Trial/Configure` → `Trial/Start` (gRPC; it was
+`POST /api/trial/configure` until 0.3)
 
-Built on statemachined's side (`api/trial_routes.py`). **Not built on triald's
-side: triald has no outbound client module at all.**
+Built on both sides: statemachined's `daemon-rs/src/grpc/`, and triald's
+`api/statemachine_executor.py` over `statemachined-client`.
 
 ```
-ConfigureTrialRequest         # extra="forbid"
-  trial_id              int   ≥ 0
-  graph                 str   a name, never a slot; "" means the active graph
-  cap_milliseconds      int   ≥ 0, wall-clock cap on the whole trial
-  start_source          str   "serial" | "ttl"                        (§9.3)
-  distribution_patches  [ { index, minimum_ms, maximum_ms,
-                            mean_ms, duration_ms } ]
+ConfigureTrialRequest         # proto/statemachined/v1/trial.proto
+  trial_id              int64  ≥ 0
+  graph                 string a name, never a slot; "" means the active graph
+  cap_milliseconds      int32  ≥ 0, wall-clock cap on the whole trial
+  start_source          string "serial" | "ttl"                       (§9.3)
+  start_line            int32? the line a "ttl" start waits on
+  distribution_patches  [ DistributionPatch ]
 
-POST /api/trial/start   { trial_id }   → refused unless armed for that id
-POST /api/trial/cancel  { trial_id }
-GET  /api/trial/result                 → the last completed trial
+Trial/Start      { trial_id }   → refused unless armed for that id
+Trial/Cancel     { trial_id }
+Trial/ReadResult                → the last completed trial
 ```
 
 **The trial type is not on this wire and never will be.** The device receives a
@@ -178,29 +183,32 @@ about whose it is and triald holds none of its own. statemachined calls it
 `graph`, because its namespace supplies the rest. A client maps the one field;
 renaming either would break a working API to buy symmetry nobody reads.
 
-**Still missing: triald's outbound client.** Nothing in triald posts to
-`/api/trial/configure` yet; `TrialParameters` is handed to a `BehaviourSource`,
-and the only implementation is the simulator. §10 item 5.
+**triald's outbound client** was the last missing piece here and is built
+(§10 item 5): `triald.executor` is the seam, `api/statemachine_executor.py` the
+implementation, and `BehaviourSource` stays the simulator's.
 
-### B — statemachined reports the outcome to triald
+### B — statemachined publishes the outcome; triald subscribes
 
-`POST http://<triald>/api/trial/outcome`
-
-Built on both sides. **Broken — see §5.1.**
+`statemachined.v1.State/WatchTrace`, read by triald — and, for a trial that ran
+without triald or before it subscribed, `State/ReadTrialTrace`. The trace entry
+carries the outcome; triald turns it into its own `triald.v1.OutcomeReport`
+and records it. The heading used to be "statemachined reports the outcome to
+triald", as a `POST http://<triald>/api/trial/outcome`; §2 says why that was
+wrong, and §5 keeps the defects it had.
 
 ```
-OutcomeReport                       # triald/dev/API.md
-  outcome              int | name   the .tdr code; 1 and "HIT" both accepted
-  manipulandum         int | name
-  reaction_time_ms     float?
-  terminating_interval int?
-  precise_fixation     bool         FROM THE EYE MONITOR — can veto on its own
-  frame_loss           {interval, frame}?   FROM VSTIMD — can veto on its own
-  reward_ms            int          what was actually delivered
+OutcomeReport                       # proto/triald/v1/trial.proto
+  trial_id             int64?       which trial this answers; §5.1
+  outcome              braemons.v1.TrialOutcome   the .tdr code
+  manipulandum         Manipulandum
+  reaction_time_ms     double?
+  terminating_interval int32?
+  precise_fixation     bool?        FROM THE EYE MONITOR — can veto on its own
+  frame_loss           FrameLoss?   FROM VSTIMD — can veto on its own
+  reward_ms            int32        what was actually delivered
   hit_condition        bool
   simulated            bool
-  note                 str?
-                                    ← trial_id MISSING. §5.1
+  note                 string?
 ```
 
 **statemachined fills in six of these and leaves the rest at their defaults,
@@ -213,9 +221,14 @@ counted, and why not when it was not.
 outcomes with it true, and a rig whose records cannot be told apart from a
 simulator's is a rig whose data cannot be trusted.
 
-### C — triald asks vstimd what happened during the trial
+### C — vstimd broadcasts what it drew; triald joins it to a trial
 
-**Not built on either side, and it needs a design decision before an endpoint.**
+**Built, as a broadcast rather than either shape below** (§2): vstimd publishes
+frame-numbered events on its ZMQ PUB socket (`proto/vstimd/v1/events.proto`,
+port 5556), `vstimd_client.events` in vstimd-client subscribes, and
+`triald.api.stimulus_subscriber` owns the join to a trial. What follows is the
+design discussion as it stood before, kept because the recommendation —
+vstimd stays trial-blind — is what survived.
 
 vstimd counts dropped frames in `server/src/timing.rs:61` and warns about them in
 `render/render_frame.rs:893`. Nothing crosses the wire, there is no per-trial or
@@ -255,16 +268,22 @@ Not interactions in the sense above — no request, no reply, no schema to revie
 |---|---|
 | `vstimd/vtl/` | the shared-memory layout: 4 input banks, 1 output bank, `u64` each, rise/fall latches, drained once per frame at frame start |
 | `gpiochip-daqd` | VTL ⇄ `/dev/gpiochipN`. Input edges from kernel events, outputs mirrored onto pins |
-| `statemachined/dev/PROTOCOL.md` | USB CDC, NDJSON, CRC, indices-not-names. The daemon ⇄ firmware link |
+| `statemachined/docs/reference/protocol.md`, `proto/statemachined/link/v1/link.proto` | USB CDC, COBS-framed protobuf (nanopb on the board), CRC-16, indices-not-names. The daemon ⇄ firmware link |
 | `vstimd/vinput/` | the second shared-memory layout: a seqlock, `f64` axis values and a writer heartbeat, read once per frame. Where a wheel or an eye tracker reaches the camera (§3 D–F) |
 
 ### D, E, F — mousewheeld, a fourth participant
 
-**Proposed, not agreed here yet.** The design is `mousewheeld/dev/PLAN.md`;
-these rows are in this catalogue so that a reviewer looking for "how does the
-wheel reach the camera" finds an answer rather than silence. Nothing about the
-daemon is built — but half of F is, on vstimd's side, which is why it is worth
-writing down before the rest is.
+**The daemon is built (`v0.3.0-alpha1`); its consumers are not.** The design
+is `mousewheeld/dev/PLAN.md`, the interface `proto/mousewheeld/v1/` (gRPC:
+`Device`, `Zones`, `Calibration`, `Config`, `StateService`). F is live end to
+end — mousewheeld writes the `vinput` segment through vstimd's own crate and
+vstimd reads it. **D is built**: a trial type names a `mousewheel_zone_set`, the
+session latches it onto the trial, and `triald.api.mousewheel_zone_arming`
+arms it on mousewheeld with the trial as the label (`Zones/Arm`, origin
+current); `e2e-tests/tests/test_a_zone_set_armed_by_triald.py` runs it against
+a real mousewheeld. Per-trial values for a set's `$name` bounds are not sent
+yet, so only a set with literal bounds arms. **E is not built**: mousewheeld
+has no marks or path ring, so there is no path to read back into the record.
 
 mousewheeld reads a running-wheel encoder and publishes how far the animal went.
 It is a **participant** under §2's rule: no `vstimd_address`, no
@@ -297,26 +316,27 @@ paragraph exists to prevent. triald records the hit afterwards, over E.
 
 | Step | Where | |
 |---|---|---|
-| triald picks a trial | `session.next_trial()`, `POST /api/trial/next` | ✅ |
+| triald picks a trial | `session.next_trial()`, `triald.v1.Trial/Next` | ✅ |
 | triald names the graph for it | `TrialType.statemachine_graph` → `TrialSpec` → `TrialParameters` | ✅ |
-| triald configures statemachined | `StateMachineExecutor.configure` | ✅ |
-| statemachined arms the device | `POST /api/trial/configure` | ✅ |
-| start · cancel · result | `api/trial_routes.py` | ✅ |
-| device runs the trial | firmware, `device_supervisor`, native build on a socket | ✅ |
-| statemachined publishes the result | the trace, `WS /api/trace/stream` | ✅ |
+| triald configures statemachined | `StateMachineExecutor.configure`, over `statemachined-client` | ✅ |
+| statemachined arms the device | `statemachined.v1.Trial/Configure` | ✅ |
+| start · cancel · result | `Trial/Start`, `Trial/Cancel`, `Trial/ReadResult` | ✅ |
+| device runs the trial | firmware, over the COBS + protobuf link; the native build on a socket for tests | ✅ |
+| statemachined publishes the result | the trace, `State/WatchTrace` | ✅ |
 | triald subscribes and translates | `triald.executor`, `api/statemachine_executor.py` | ✅ |
-| …over statemachined's own client | `statemachined.client`, `statemachined/python/` | ✅ |
-| statemachined lists who is watching | `GET /api/observers`, Observers panel | ✅ |
+| …over statemachined's own client | `statemachined-client`, `statemachined/client/python/` | ✅ |
+| statemachined lists who is watching | `State/ReadObservers`, Observers panel | ✅ |
 | triald counts, accepts, records | `session.report_outcome()`, `recording.py` | ✅ |
 | triald configures vstimd | — | ❌ neither side |
-| vstimd broadcasts frame loss | `WS`-less: ZMQ PUB, `events.proto` | ✅ `0.2` |
+| vstimd broadcasts frame loss | ZMQ PUB, `events.proto` | ✅ `0.2` |
 | triald joins frame loss to a trial | `triald.stimulus` | ✅ |
-| a client subscribes to the stream | `vstimd.events` (vstimd-client) | ✅ |
-| triald wires the two together | — | ❌ the last gap |
+| a client subscribes to the stream | `vstimd_client.events` (vstimd-client) | ✅ |
+| triald wires the two together | `triald.api.stimulus_subscriber` | ✅ (§10 item 8) |
 | readiness gate `configure→ready→start` | designed, `triald/dev/PLAN.md` | ❌ not built |
 | **F** vstimd reads a position device | `vstimd/vinput/`, `input/devices.rs`, `[[input.device]]`, `LinearNav3D` | ✅ `0.3`, consumer half |
-| **F** anything writes one | — | ❌ no producer exists |
-| **D**, **E** mousewheeld itself | `mousewheeld/dev/PLAN.md` | ❌ a plan, M0–M7 all open |
+| **F** mousewheeld writes one | `mousewheeld/daemon/src/publish/`, through vstimd's `vinput` crate | ✅ `0.3`, simulated board |
+| **D** triald arms a trial's zone set | `TrialType.mousewheel_zone_set`, `triald.api.mousewheel_zone_arming`, `Zones/Arm` | ✅ literal bounds; per-trial `$name` values not sent |
+| **E** the path back into the record | — | ❌ mousewheeld has no marks or path ring |
 
 ## 5. Three defects, all in interaction B
 
@@ -408,8 +428,8 @@ message**, which is the whole reason §7 says no to a proto repo.
 | Fact | Today |
 |---|---|
 | the `.tdr` outcome codes | ✅ **a protobuf enum**, `braemons/v1/trial_outcome.proto`, canonical here and vendored into both daemons |
-| rig identity — a `rig=` TXT record salted `braemons:` | designed in `console/docs/PLAN.md` §4, built nowhere |
-| mDNS TXT keys — `id` `version` `api` `elements` `device` `port` | statemachined publishes all six; vstimd publishes `id` only, pointing at the ZMQ port |
+| rig identity — a `rig=` TXT record, `sha256("braemons:" + machine-id)[:16]` | ✅ all four daemons publish it from inside the daemon, and the console groups on it. The box's hostname, `braemons-XXXXXX`, is `braemons-rig`'s ([braemons/rig](https://github.com/braemons/rig)), not any daemon's |
+| mDNS TXT keys — `id` `rig` `version` `elements` `port` | ✅ every daemon's SRV port is where its panels are; vstimd adds `zmq_port` and `event_port`, triald `grpc_port`, statemachined `device` and a vestigial `api` |
 | VTL bit and line semantics | already a proper in-repo contract in `vstimd/vtl/` — leave it there |
 
 The first three become files here:
@@ -621,7 +641,9 @@ What does *not* change:
   stream, and nothing about gRPC helps there. §7's first table is still right
   about it.
 - the fast bus — `vinput`, `vtl` — is shared memory and is not an RPC at all.
-- the device wire stays NDJSON + CRC to the board.
+- the device wire stays NDJSON + CRC to the board. *(Superseded: every wire is
+  protobuf now, board links included, through nanopb. See
+  `DAEMON_LAYOUT.md` §2.1, which also says where that transition stands.)*
 
 Two findings from the spike worth carrying into the work:
 
@@ -661,6 +683,13 @@ statemachined publishes and commands nothing (§2). A `triald-client` would exis
 for a console, not for a daemon, and nothing in this catalogue calls triald.
 
 ## 8. End-to-end tests
+
+> **Historical below this note.** The tests live in
+> [`e2e-tests/`](e2e-tests/README.md) now, install the released `.deb`s of all
+> three daemons, and drive them over gRPC and ZMQ; statemachined's `python/`
+> tree, FastAPI and the REST routes named in the stages are gone. The stages
+> are kept for the reasoning — what each one had to prove — and
+> `e2e-tests/README.md` is what describes the suite as it runs today.
 
 **Where: `statemachined/python/tests/integration/`.** The dependency points
 statemachined → triald, dev-only, from git — which matches the coupling that
@@ -838,7 +867,7 @@ starts to earn itself**, and not before.
 | 4 | ~~**Stage 1 e2e**~~ **done** | — |
 | 5 | ~~Answer §9.2; a `graph` on the trial type; triald's outbound client~~ **done** | — |
 | 6 | ~~**Stage 2 e2e** — triald initiates~~ **done** (10 tests, [`e2e-tests/`](e2e-tests/README.md), moved here out of statemachined) | — |
-| 7 | `mdns.md`; `rig=` in both daemons; vstimd's TXT records and web port | — |
+| 7 | ~~`rig=` in every daemon; vstimd's TXT records and web port~~ **done** — mousewheeld and triald advertise too | — |
 | 8 | ~~§3C: vstimd's event stream; the client subscriber; triald's join~~ **done** — `triald.api.stimulus_subscriber` closes it | — |
 | 9 | ~~**Stage 3 e2e**, and decide whether `rig-integration` exists~~ **done** — it does not: it is [`e2e-tests/`](e2e-tests/README.md), here | — |
 | 10 | ~~**§9.7: a deadline on the trial in flight in triald**~~ **done** — `NEVER_FINISHED = 11` | — |
@@ -849,9 +878,8 @@ nothing arrives (§9.7); it subscribes to the display the same way and owns the
 join to a trial, because it is the only side that knows what a trial is. Nothing
 in the loop waits on a promise nobody could keep.
 
-**Item 7 (mDNS) is what is left, and it is independent and small** — and
-vstimd's event stream needs a port advertised anyway, so a console can find it
-without being told.
+**Item 7 (mDNS) is done too**: every daemon advertises itself with a shared
+`rig=`, and vstimd's record carries its event port as `event_port=`.
 
 ### Where the stage-3 tests live, and why not a fourth repo
 
@@ -990,7 +1018,7 @@ Within a major version, for every interface in §3 and the fast bus beside it:
 
 A console showing three daemons' panels needs to know what it is showing, and
 the daemons cannot agree on a transport: statemachined, triald and mousewheeld
-speak HTTP+JSON, and vstimd's control surface is protobuf over a WebSocket. So
+speak gRPC, and vstimd's control surface is protobuf over ZMQ and a WebSocket. So
 the uniform place is the one they already share — **the mDNS TXT record**, which
 carries `id`, `version`, `api`, `elements`, `device` and `port` today.
 

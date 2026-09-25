@@ -138,6 +138,7 @@ def free_port() -> int:
         return int(s.getsockname()[1])
 
 
+
 def distinct_ports(count: int) -> list[int]:
     """`count` ports that are not each other.
 
@@ -234,10 +235,10 @@ def display(request: pytest.FixtureRequest, tmp_path_factory) -> dict:
 
 
 def _attached_display(address: str, event_port: int):
-    from vstimd import Connection
+    from vstimd_client import VstimdClient
 
     try:
-        with Connection(address, recv_timeout_s=2.0) as probe:
+        with VstimdClient(address, recv_timeout_s=2.0) as probe:
             probe.system.wait_for_frames(0)
     except Exception as error:
         pytest.skip(
@@ -271,7 +272,7 @@ def _start_display(vstimd_binary: pathlib.Path, scratch: pathlib.Path, ports=Non
     address coming back, so a subscriber that was attached to it reconnects
     rather than being handed a different rig.
     """
-    from vstimd import Connection
+    from vstimd_client import VstimdClient
 
     command_port, event_port = ports or distinct_ports(2)
     log = scratch / "vstimd.log"
@@ -307,7 +308,7 @@ def _start_display(vstimd_binary: pathlib.Path, scratch: pathlib.Path, ports=Non
         if proc.poll() is not None:
             pytest.fail(f"vstimd exited at once:\n{log.read_text()}")
         try:
-            with Connection(address, recv_timeout_s=1.0) as probe:
+            with VstimdClient(address, recv_timeout_s=1.0) as probe:
                 probe.system.wait_for_frames(0)
             return True
         except Exception:
@@ -391,6 +392,7 @@ def restartable_display(vstimd_binary: pathlib.Path, tmp_path_factory):
 LINE_MAP = json.loads((pathlib.Path(__file__).parent / "line_map.json").read_text())
 
 
+
 class Executor:
     """A statemachined on a port, talked to the way anything else would.
 
@@ -398,41 +400,69 @@ class Executor:
     daemon in-process with Starlette's `TestClient`, which is how statemachined's
     own suite tests statemachined — correctly, because there the daemon is the
     subject. Here it is not: what is under test is a rig, and on a rig this
-    daemon is a service on port 8081 that nothing imports. A test that reached
-    into it as a library would be exercising a path no operator has.
+    daemon is a service that nothing imports. A test that reached into it as a
+    library would be exercising a path no operator has.
 
-    So: a real process, real HTTP, and a real WebSocket for the trace. Which also
-    means `StateMachineExecutor` is used the way it ships, over httpx, rather
-    than with a test client injected into it.
+    So: a real process, a real gRPC channel, and a real server stream for the
+    trace. Which also means `StateMachineExecutor` is used the way it ships.
+
+    **It was HTTP, and the routes are gone.** statemachined's interface is
+    `proto/statemachined/v1/` now, and the only description of it is that file;
+    this suite reaches it through `statemachined-client`, which is generated
+    from it. What that costs is that the *pinned releases* in
+    `rig_versions.toml` predate the change — see README.md.
     """
 
-    def __init__(self, base_url: str, client) -> None:
-        self.base_url = base_url
-        self._client = client
+    def __init__(self, address: str, client) -> None:
+        #: `host:port` of the gRPC listener, which is what a client is given.
+        self.address = address
+        self.client = client
 
-    def get(self, path: str, **kw):
-        return self._client.get(path, **kw)
+    def mark(self) -> int:
+        """The entry number a subscription should start *after* to see only
+        what happens from now on.
 
-    def post(self, path: str, **kw):
-        return self._client.post(path, **kw)
-
-    def put(self, path: str, **kw):
-        return self._client.put(path, **kw)
+        **This is the one thing the transport changed under these tests.** A
+        WebSocket subscription began at the newest entry; `WatchTrace` carries
+        the ring's whole backlog, so a stream opened with no mark replays every
+        trial the daemon has ever run — and a test looking for "the next trial
+        to finish" got the first one instead. That is the better default for a
+        subscriber that reconnects, and the wrong one for a test asking what
+        happens next, so the tests say which they mean.
+        """
+        return self.client.read_state().newest_trace_entry_number + 1
 
     @contextlib.contextmanager
-    def trace_stream(self, observer: str = "triald"):
-        """The executor's published trace, as an iterator of messages.
+    def trace_stream(self, observer: str = "triald", since: int | None = None):
+        """The executor's published trace, as an iterator of entries.
 
-        Opening this is the whole of subscribing and closing it is the whole of
-        leaving: nothing on the far end holds a trial for a subscriber, and
-        `?observer=` is a label on its diagnostics page that grants nothing.
+        Opening this is the whole of subscribing and cancelling it is the whole
+        of leaving: nothing on the far end holds a trial for a subscriber, and
+        the observer name is a label on its diagnostics that grants nothing.
+
+        `since` is where to start. **The default is "from now"**, which is what
+        a test watching for something it is about to cause means; a caller that
+        armed a trial before subscribing passes the mark it took beforehand,
+        and nothing is missed.
+
+        **A deadline, because a subscription does not end.** The caller decides
+        how long it is willing to wait — only the side that knows a trial is in
+        flight can tell "not yet" from "never" — and this suite's answer is
+        `TRACE_DEADLINE_SECONDS`.
         """
-        from websockets.sync.client import connect
+        subscription = self.client.watch_trace(
+            self.mark() if since is None else since,
+            observer=observer,
+            timeout_s=TRACE_DEADLINE_SECONDS,
+        )
+        with subscription:
+            yield iter(subscription)
 
-        scheme = "wss" if self.base_url.startswith("https") else "ws"
-        rest = self.base_url.split("://", 1)[-1]
-        with connect(f"{scheme}://{rest}/api/trace/stream?observer={observer}") as socket:
-            yield iter(lambda: socket.recv(), None)
+
+#: How long a subscription in this suite will wait before it is a failure.
+#: Generous against a container on a loaded runner, and finite so a wedged rig
+#: fails the suite rather than hanging it.
+TRACE_DEADLINE_SECONDS = 60.0
 
 
 def _rig_config(device_target: str, tmp_path: pathlib.Path) -> pathlib.Path:
@@ -482,22 +512,34 @@ def executor(request: pytest.FixtureRequest, tmp_path):
     firmware compiled for this host. That path is for developing; it is not what
     `make test` runs.
     """
-    import httpx
+    from statemachined_client import StatemachinedClient
 
     attached = request.config.getoption("--executor")
     if attached:
-        client = httpx.Client(base_url=attached, timeout=10.0)
+        address = _grpc_address(attached)
+        client = StatemachinedClient(address)
         try:
-            if client.get("/api/health").status_code != 200:
-                pytest.skip(f"statemachined at {attached} is not healthy")
+            client.wait_until_ready(timeout_s=10)
+            if not client.read_health().ok:
+                pytest.skip(f"statemachined at {address} is not healthy")
         except Exception as error:
-            pytest.skip(f"no statemachined at {attached}: {error}")
-        yield Executor(attached, client)
-        _leave_the_device_idle(client, attached)
+            pytest.skip(f"no statemachined at {address}: {error}")
+        yield Executor(address, client)
+        _leave_the_device_idle(client, address)
         client.close()
         return
 
     yield from _spawned_executor(request, tmp_path)
+
+
+def _grpc_address(given: str) -> str:
+    """`--executor` as a gRPC target: the same port the panels are on.
+
+    statemachined serves the panels, gRPC and gRPC-Web on one port since it
+    became Rust, so the number a person types into a browser is the number a
+    client dials. It used to be one above it.
+    """
+    return given.strip().removeprefix("http://").removeprefix("https://").rstrip("/")
 
 
 def _spawned_executor(request: pytest.FixtureRequest, tmp_path, *, native: bool = False):
@@ -507,7 +549,7 @@ def _spawned_executor(request: pytest.FixtureRequest, tmp_path, *, native: bool 
     for a test that is about the daemons' handover rather than about wires and
     must not share a board -- see `test_the_handover_to_triald.py`.
     """
-    import httpx
+    from statemachined_client import StatemachinedClient
 
     on_hardware = request.config.getoption("--hardware") and not native
     if on_hardware:
@@ -517,8 +559,9 @@ def _spawned_executor(request: pytest.FixtureRequest, tmp_path, *, native: bool 
         device = _native_device(tmp_path)
         device_target = device.target_url
 
-    port = distinct_ports(1)[0]
-    base_url = f"http://127.0.0.1:{port}"
+    # One port: the panels, gRPC and gRPC-Web are all on `--port`.
+    port = free_port()
+    address = f"127.0.0.1:{port}"
     log = tmp_path / "statemachined.log"
     with log.open("w") as sink:
         proc = subprocess.Popen(
@@ -529,7 +572,7 @@ def _spawned_executor(request: pytest.FixtureRequest, tmp_path, *, native: bool 
                 "127.0.0.1",
                 "--port",
                 str(port),
-                "--config",
+                "--rig-config",
                 str(_rig_config(device_target, tmp_path)),
                 # A test run must not advertise itself to the lab as a rig.
                 "--no-mdns",
@@ -537,13 +580,13 @@ def _spawned_executor(request: pytest.FixtureRequest, tmp_path, *, native: bool 
             stdout=sink,
             stderr=subprocess.STDOUT,
         )
-        client = httpx.Client(base_url=base_url, timeout=10.0)
+        client = StatemachinedClient(address)
 
         def answering() -> bool:
             if proc.poll() is not None:
                 pytest.fail(f"statemachined exited at once:\n{log.read_text()}")
             try:
-                return client.get("/api/health").status_code == 200
+                return client.read_health().ok
             except Exception:
                 return False
 
@@ -551,11 +594,11 @@ def _spawned_executor(request: pytest.FixtureRequest, tmp_path, *, native: bool 
             _stop(proc)
             pytest.fail(f"statemachined never answered:\n{log.read_text()}")
 
-        if on_hardware and not client.get("/api/device").json().get("connected"):
+        if on_hardware and not client.read_device().connected:
             _stop(proc)
             pytest.skip(f"no board answering on {device_target}")
 
-        yield Executor(base_url, client)
+        yield Executor(address, client)
 
         if on_hardware:
             _leave_the_device_idle(client, device_target)
@@ -565,60 +608,53 @@ def _spawned_executor(request: pytest.FixtureRequest, tmp_path, *, native: bool 
         device.stop()
 
 
-class _PackagedNativeDevice:
-    """`statemachined device`, the packaged command, on a port of its own.
+class _NativeDevice:
+    """statemachined's firmware compiled for this host, on a port of its own.
 
-    What a box that installed the `.deb` has: the same bridge and the same
-    firmware compiled for the host that `container/entrypoint.sh` starts for the
-    shared daemon, started again here for a test that needs a device nobody
-    else has touched.
+    `statemachined_native_device` listens on TCP itself -- `--port 0` asks the
+    kernel for a free port and the first line on stdout names it -- and a daemon
+    dials it as it would a board on a network. It is a test fixture, not part of
+    the package: a checkout builds it (`make integration-device`), and the
+    container has it from the release's own asset.
     """
 
     def __init__(self, tmp_path: pathlib.Path) -> None:
-        self.port = distinct_ports(1)[0]
-        self.target_url = f"socket://127.0.0.1:{self.port}"
-        self._log = tmp_path / "device.log"
-        self._sink = self._log.open("w")
         self._proc = subprocess.Popen(
-            [_statemachined_command(), "device", "--port", str(self.port)],
-            stdout=self._sink,
-            stderr=subprocess.STDOUT,
+            [_native_device_command(), "--port", "0"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
             cwd=tmp_path,
             env={**os.environ, "STATEMACHINED_STORE": str(tmp_path / "store.bin")},
+            text=True,
         )
-
-        def listening() -> bool:
-            if self._proc.poll() is not None:
-                pytest.fail(f"statemachined device exited at once:\n{self._log.read_text()}")
-            with contextlib.suppress(OSError), socket.create_connection(
-                ("127.0.0.1", self.port), timeout=0.5
-            ):
-                return True
-            return False
-
-        if not wait_until(listening, timeout_s=15.0):
+        assert self._proc.stdout is not None
+        first_line = self._proc.stdout.readline().strip()
+        if not first_line.startswith("listening on "):
             self.stop()
-            pytest.fail(f"statemachined device never listened:\n{self._log.read_text()}")
+            pytest.fail(f"statemachined_native_device said {first_line!r}, not where it listens")
+        self.target_url = "socket://" + first_line.removeprefix("listening on ")
 
     def stop(self) -> None:
         _stop(self._proc)
-        self._sink.close()
 
 
-def _native_device(tmp_path: pathlib.Path):
-    """The firmware compiled for this host, on a socket: imported if it can be.
+def _native_device(tmp_path: pathlib.Path) -> _NativeDevice:
+    """The firmware compiled for this host, on a socket."""
+    return _NativeDevice(tmp_path)
 
-    statemachined's own bridge in this process when its package is importable
-    (a checkout, `make test-local`); otherwise the installed command, which is
-    what the container has -- the daemon's venv is its own, not this suite's.
-    """
-    try:
-        from statemachined.device.native_device_on_a_socket import NativeDeviceOnASocket
-    except ImportError:
-        return _PackagedNativeDevice(tmp_path)
-    device = NativeDeviceOnASocket(store_path=str(tmp_path / "store.bin"))
-    device.start()
-    return device
+
+def _native_device_command() -> str:
+    """`$STATEMACHINED_NATIVE_DEVICE`, or `statemachined_native_device` on PATH."""
+    named = os.environ.get("STATEMACHINED_NATIVE_DEVICE")
+    if named and pathlib.Path(named).exists():
+        return named
+    found = shutil.which("statemachined_native_device")
+    if found:
+        return found
+    pytest.skip(
+        "no statemachined_native_device: build it in a statemachined checkout "
+        "(`make integration-device`) and name it in $STATEMACHINED_NATIVE_DEVICE"
+    )
 
 
 def _stop(proc: subprocess.Popen) -> None:
@@ -638,19 +674,17 @@ def _stop(proc: subprocess.Popen) -> None:
 
 
 def _statemachined_command() -> str:
-    """The daemon's entry point, as installed.
+    """The daemon, as installed: the binary the service unit runs.
 
-    `shutil.which` rather than `sys.executable -m`: the package declares a
-    console script and that is what the service unit runs, so it is what should
-    be exercised. A `.deb` puts it at /opt/braemons/statemachined/bin.
+    First on PATH, which is how `make test-local` puts a checkout's build in
+    front; the `.deb` installs it at /usr/bin/statemachined.
     """
-    for candidate in ("statemachined", "/opt/braemons/statemachined/bin/statemachined"):
-        found = shutil.which(candidate) or (candidate if pathlib.Path(candidate).exists() else None)
-        if found:
-            return found
+    found = shutil.which("statemachined")
+    if found:
+        return found
     pytest.skip(
-        "no statemachined on PATH: install it (`pip install statemachined`, or the "
-        ".deb) — see e2e-tests/README.md, 'The bootstrap gap'"
+        "no statemachined on PATH: install the .deb, or build it in a statemachined "
+        "checkout (`make rust`) — see e2e-tests/README.md, 'The bootstrap gap'"
     )
 
 
@@ -661,22 +695,20 @@ def _leave_the_device_idle(client, target: str) -> None:
     walks away mid-trial fails the next several with an error about something
     else entirely. Local runs get a new device per test and need none of this.
 
-    **A cancel names the trial it is cancelling.** `POST /api/trial/cancel` takes
-    a `trial_id` and forbids anything else in the body, so the `{"reason": ...}`
-    this used to send was a 422 the daemon never acted on -- a teardown that had
-    never once returned a device to idle, invisible because nothing had yet run
-    after the one test that leaves a trial in flight. The id comes from the
-    daemon rather than from the caller: whatever is actually armed is what has
-    to be cancelled, and the test that armed it may be the one that failed.
+    **A cancel names the trial it is cancelling.** `Trial/Cancel` takes a
+    `trial_id` and nothing else, so the `{"reason": ...}` this once sent over
+    HTTP was a 422 the daemon never acted on -- a teardown that had never once
+    returned a device to idle, invisible because nothing had yet run after the
+    one test that leaves a trial in flight. An rpc could not have had that bug:
+    a field the message does not declare is a compile-time error in the client
+    rather than a body the far end silently rejects.
     """
     try:
-        state = client.get("/api/state")
-        if state.status_code != 200:
-            return
-        frame = state.json()
-        # The daemon's own definition of busy — `running`, or a link state of 2,
-        # which is armed but not yet started.
-        client.post("/api/trial/cancel", json={"trial_id": frame.get("trial_id") or 0})
+        state = client.read_state()
+        # The id comes from the daemon rather than from the caller: whatever is
+        # actually armed is what has to be cancelled, and the test that armed
+        # it may be the one that failed.
+        client.cancel_trial(state.trial_id or 0)
         # Cancelling is a round trip to the device; the next test's upload is
         # refused if it arrives first.
         wait_until(lambda: not _is_busy(client), timeout_s=5.0)
@@ -685,11 +717,13 @@ def _leave_the_device_idle(client, target: str) -> None:
 
 
 def _is_busy(client) -> bool:
-    frame = client.get("/api/state")
-    if frame.status_code != 200:
+    """The daemon's own definition: running, or a link state of 2, which is
+    armed but not yet started."""
+    try:
+        state = client.read_state()
+    except Exception:
         return False
-    body = frame.json()
-    return bool(body.get("running") or body.get("link_state") == 2)
+    return bool(state.running or state.link_state == 2)
 
 
 # ── The operator ──────────────────────────────────────────────────────────────
@@ -721,3 +755,115 @@ def confirm(request: pytest.FixtureRequest):
             pytest.fail(f"the operator said no: {question}")
 
     return ask
+
+
+# ── mousewheeld ───────────────────────────────────────────────────────────────
+
+#: Two zone sets the wheel fixture's store starts with. `fixed` has literal
+#: bounds, so it arms with nothing more than its name, which is all triald
+#: sends today. `parameterised` needs a per-trial `$goal_cm` and must be refused
+#: naming it rather than armed with a zero.
+WHEEL_ZONE_SETS = {
+    "fixed": {
+        "zone_set_version": 1,
+        "zones": [
+            {
+                "name": "goal",
+                "shape": "rect",
+                "axes": ["wheel"],
+                "metric": "displacement",
+                "min_cm": [100.0],
+                "max_cm": [None],
+                "fire": "once",
+                "output": {"line": "zone_goal", "action": "pulse", "ms": 10},
+            }
+        ],
+    },
+    "parameterised": {
+        "zone_set_version": 1,
+        "zones": [
+            {
+                "name": "goal",
+                "shape": "rect",
+                "axes": ["wheel"],
+                "metric": "displacement",
+                "min_cm": ["$goal_cm"],
+                "max_cm": [None],
+                "fire": "once",
+                "output": {"line": "zone_goal", "action": "pulse", "ms": 10},
+            }
+        ],
+    },
+}
+
+#: The rig config the wheel fixture runs on: one axis and the one line the
+#: zone sets above name. No `[device] port`, because `--simulate` is the board.
+WHEEL_RIG_CONFIG = """\
+[[axis]]
+name = "wheel"
+counts_per_cm = 86.920
+counts_per_rev = 4096
+diameter_cm = 15.0
+
+[[line]]
+name = "zone_goal"
+index = 0
+pin = 5
+"""
+
+
+def _mousewheeld_command() -> str:
+    """The daemon: `MOUSEWHEELD_BINARY` (`make test-local`), else on PATH (the `.deb`)."""
+    override = os.environ.get("MOUSEWHEELD_BINARY")
+    if override:
+        if not pathlib.Path(override).is_file():
+            pytest.fail(f"MOUSEWHEELD_BINARY is set to {override}, which does not exist")
+        return override
+    found = shutil.which("mousewheeld")
+    if found:
+        return found
+    pytest.skip("no mousewheeld: set MOUSEWHEELD_BINARY, or install the .deb")
+
+
+@pytest.fixture
+def wheel(tmp_path):
+    """A mousewheeld of this test's own, with a simulated wheel, and its client."""
+    from mousewheeld_client import MousewheeldClient
+
+    store = tmp_path / "wheel-store"
+    (store / "zone-sets").mkdir(parents=True)
+    for name, zone_set in WHEEL_ZONE_SETS.items():
+        (store / "zone-sets" / f"{name}.json").write_text(json.dumps(zone_set, indent=2))
+    rig_config = tmp_path / "mousewheeld-rig-config.toml"
+    # A segment name of this test's own, so two runs cannot share one.
+    rig_config.write_text(
+        WHEEL_RIG_CONFIG + f'\n[publish]\nshm_name = "/e2e_wheel_{os.getpid()}"\n'
+    )
+
+    port = free_port()
+    command = [
+        _mousewheeld_command(),
+        "serve",
+        "--simulate",
+        "--bind", "127.0.0.1",
+        "--port", str(port),
+        "--rig-config", str(rig_config),
+        "--storage-dir", str(store),
+        # A test run must not advertise itself to the lab as a rig.
+        "--no-mdns",
+    ]
+
+    log = tmp_path / "mousewheeld.log"
+    with log.open("w") as sink:
+        proc = subprocess.Popen(command, stdout=sink, stderr=subprocess.STDOUT)
+    client = MousewheeldClient(f"127.0.0.1:{port}")
+    try:
+        client.wait_until_ready(timeout_s=15)
+    except Exception:
+        _stop(proc)
+        pytest.fail(f"mousewheeld did not come up:\n{log.read_text()}")
+    try:
+        yield {"address": f"127.0.0.1:{port}", "client": client, "log": log}
+    finally:
+        client.close()
+        _stop(proc)

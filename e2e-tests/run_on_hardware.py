@@ -295,15 +295,59 @@ def parse_manifest(text: str) -> dict[str, str]:
     return found
 
 
-def parse_hello(output: str) -> dict:
-    """board, firmware and protocol from `statemachined hello`'s printout."""
-    import re
+def parse_device(output: str) -> dict:
+    """board, firmware and protocol from `statemachinectl device`, if it has a board.
 
-    match = re.search(r"board\s+(\S+)\s+fw\s+(\S+)\s+proto\s+(\S+)", output)
-    if not match:
+    The daemon answers whether or not it reached one; `connected` is what says
+    the board replied to the greeting.
+    """
+    try:
+        device = json.loads(output)
+    except ValueError:
         return {}
-    keys = ("board", "firmware_version", "protocol_version")
-    return dict(zip(keys, match.groups(), strict=True))
+    if not device.get("connected"):
+        return {}
+    return {key: device.get(key) for key in ("board", "firmware_version", "protocol_version")}
+
+
+def pin_names(output: str) -> str:
+    """The board's own pin labels, from `statemachinectl lines`, one line per direction."""
+    try:
+        lines = json.loads(output)
+    except ValueError:
+        return output
+    return "\n".join(
+        f"  {direction:<7} " + "  ".join(
+            f"{index}:{label}" for index, label in enumerate(lines.get(key) or [])
+        )
+        for direction, key in (("inputs", "board_input_pins"), ("outputs", "board_output_pins"))
+    )
+
+
+#: Run inside the image: the daemon in front of the board, asked what it found
+#: through the client's command line -- the way a rig asks it -- then stopped.
+PROBE = """
+cat > /tmp/probe.toml <<TOML
+device_target = "{device}"
+connect_on_startup = true
+expected_board = ""
+graph_store_directory = "/tmp/probe/graphs"
+state_machine_config_directory = "/tmp/probe/configs"
+trace_directory = "/tmp/probe/trace"
+recording_directory = "/tmp/probe/recordings"
+TOML
+/usr/bin/statemachined serve --rig-config /tmp/probe.toml --port 8081 --no-mdns \
+  >/tmp/probe.log 2>&1 &
+daemon=$!
+ctl="/opt/e2e-tests/bin/statemachinectl --rig 127.0.0.1:8081"
+for _ in $(seq 40); do
+  $ctl device 2>/dev/null | grep -q '"connected": true' && break
+  sleep 0.25
+done
+$ctl device; echo '=== pins'; $ctl lines; echo '=== manifest'
+cat {manifest} 2>/dev/null
+kill $daemon
+"""
 
 
 def firmware_check(board: dict, manifest: dict[str, str]) -> bool:
@@ -404,7 +448,6 @@ def docker_mode(args: argparse.Namespace) -> int:
 
     passthrough = ["--device", f"{real_device}:{in_container}"]
     heading("The board")
-    statemachined = "/opt/braemons/statemachined/bin/statemachined"
     probe = run(
         [
             "docker",
@@ -415,19 +458,17 @@ def docker_mode(args: argparse.Namespace) -> int:
             "sh",
             IMAGE,
             "-c",
-            f"{statemachined} -t {in_container} hello; echo '=== pins'; "
-            f"{statemachined} -t {in_container} --hello pins; echo '=== manifest'; "
-            f"cat {FIRMWARE_DIR}/MANIFEST.txt 2>/dev/null",
+            PROBE.format(device=in_container, manifest=f"{FIRMWARE_DIR}/MANIFEST.txt"),
         ],
         check=False,
         capture=True,
     )
-    hello, _, rest = probe.stdout.partition("=== pins")
+    device, _, rest = probe.stdout.partition("=== pins")
     pins, _, manifest_text = rest.partition("=== manifest")
-    board = parse_hello(hello)
+    board = parse_device(device)
     if not board:
-        warn("the board did not answer a hello:")
-        say((hello + probe.stderr).strip())
+        warn("the daemon could not greet the board:")
+        say((device + probe.stderr).strip())
         say(
             "  Is the statemachined firmware flashed, and is it the right port? A firmware "
             "speaking another protocol refuses the hello with bad_proto."
@@ -438,7 +479,7 @@ def docker_mode(args: argparse.Namespace) -> int:
         if not firmware_check(board, parse_manifest(manifest_text)):
             return 1
         heading("The board's own pin names")
-        say(pins.rstrip())
+        say(pin_names(pins))
         say("\n  Line numbers below are the ones in that list.")
     wiring_table(None, "nothing (no GPIO in this mode)")
 

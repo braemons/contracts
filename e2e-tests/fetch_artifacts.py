@@ -86,6 +86,9 @@ def main() -> int:
         if not repo or not pattern:
             continue
         ok &= fetch(repo, entry["tag"], pattern.format(version=entry["version"]))
+        # statemachined's board-less far end, a binary beside its package.
+        if entry.get("native_device_asset"):
+            ok &= fetch(repo, entry["tag"], entry["native_device_asset"])
         # A wheel published as a release asset rather than to a registry. Same
         # fetch, same directory: the image copies one directory and the whole
         # input set is visible in one place.
@@ -110,7 +113,10 @@ def main() -> int:
         for entry in pins.values()
         if entry.get("wheel")
     ]
-    requirements += ["pytest>=8.3", "httpx>=0.28", "websockets>=13"]
+    # httpx and websockets are gone with statemachined's routes: nothing in
+    # this suite speaks HTTP any more, and the two streams are
+    # server-streaming rpcs carried by the client libraries above.
+    requirements += ["pytest>=8.3"]
     (ARTIFACTS / "requirements.txt").write_text("\n".join(requirements) + "\n")
     for line in requirements:
         print(f"  ✓ requirements.txt: {line}")
