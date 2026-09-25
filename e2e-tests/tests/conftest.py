@@ -138,26 +138,6 @@ def free_port() -> int:
         return int(s.getsockname()[1])
 
 
-def free_port_with_a_free_successor() -> int:
-    """A free port whose `port + 1` is free too.
-
-    `statemachined serve` binds both: the panels on `--port` and gRPC on one
-    above it. Asking the kernel for one port says nothing about the next, and a
-    daemon that comes up and then cannot start its second listener fails a test
-    for a reason that has nothing to do with what it was testing.
-    """
-    for _ in range(50):
-        with socket.socket() as first:
-            first.bind(("127.0.0.1", 0))
-            port = int(first.getsockname()[1])
-            try:
-                with socket.socket() as second:
-                    second.bind(("127.0.0.1", port + 1))
-            except OSError:
-                continue
-            return port
-    raise AssertionError("no pair of consecutive free ports after 50 tries")
-
 
 def distinct_ports(count: int) -> list[int]:
     """`count` ports that are not each other.
@@ -255,10 +235,10 @@ def display(request: pytest.FixtureRequest, tmp_path_factory) -> dict:
 
 
 def _attached_display(address: str, event_port: int):
-    from vstimd import Connection
+    from vstimd_client_class import VstimdClient
 
     try:
-        with Connection(address, recv_timeout_s=2.0) as probe:
+        with VstimdClient(address, recv_timeout_s=2.0) as probe:
             probe.system.wait_for_frames(0)
     except Exception as error:
         pytest.skip(
@@ -292,7 +272,7 @@ def _start_display(vstimd_binary: pathlib.Path, scratch: pathlib.Path, ports=Non
     address coming back, so a subscriber that was attached to it reconnects
     rather than being handed a different rig.
     """
-    from vstimd import Connection
+    from vstimd_client_class import VstimdClient
 
     command_port, event_port = ports or distinct_ports(2)
     log = scratch / "vstimd.log"
@@ -328,7 +308,7 @@ def _start_display(vstimd_binary: pathlib.Path, scratch: pathlib.Path, ports=Non
         if proc.poll() is not None:
             pytest.fail(f"vstimd exited at once:\n{log.read_text()}")
         try:
-            with Connection(address, recv_timeout_s=1.0) as probe:
+            with VstimdClient(address, recv_timeout_s=1.0) as probe:
                 probe.system.wait_for_frames(0)
             return True
         except Exception:
@@ -411,17 +391,6 @@ def restartable_display(vstimd_binary: pathlib.Path, tmp_path_factory):
 #: test that fails for a reason having nothing to do with any daemon.
 LINE_MAP = json.loads((pathlib.Path(__file__).parent / "line_map.json").read_text())
 
-
-#: Where statemachined's gRPC listens, given the port its panels are served on.
-#:
-#: **The `+ 1` is written here rather than imported**, deliberately. It is the
-#: daemon's arithmetic -- statemachined answers on `--port` and on the one
-#: above it, where the family's clients dial it -- and a suite that imported it
-#: could not catch the two sides disagreeing. This is the same reason
-#: `rig_versions.toml` names asset filenames rather than deriving them.
-#: `contracts/DAEMON_LAYOUT.md` has the family's ports.
-def grpc_port_for(web_port: int) -> int:
-    return web_port + 1
 
 
 class Executor:
@@ -564,22 +533,13 @@ def executor(request: pytest.FixtureRequest, tmp_path):
 
 
 def _grpc_address(given: str) -> str:
-    """`--executor` as a gRPC target.
+    """`--executor` as a gRPC target: the same port the panels are on.
 
-    The option names the daemon by the port its **panels** are on — what a
-    person types into a browser and what a console's `rigs.json` holds — and
-    gRPC is one above it. Accepting the familiar number and doing the
-    arithmetic here beats asking every operator to learn a second one.
-
-    **It is always the panels' port, never gRPC's.** There is no way to tell
-    `8081` from `8082` by looking at it, so guessing would make one of the two
-    silently wrong; `--executor` means one thing.
+    statemachined serves the panels, gRPC and gRPC-Web on one port since it
+    became Rust, so the number a person types into a browser is the number a
+    client dials. It used to be one above it.
     """
-    address = given.strip().removeprefix("http://").removeprefix("https://").rstrip("/")
-    host, _, port = address.rpartition(":")
-    if not host or not port.isdigit():
-        return address
-    return f"{host}:{grpc_port_for(int(port))}"
+    return given.strip().removeprefix("http://").removeprefix("https://").rstrip("/")
 
 
 def _spawned_executor(request: pytest.FixtureRequest, tmp_path, *, native: bool = False):
@@ -599,11 +559,9 @@ def _spawned_executor(request: pytest.FixtureRequest, tmp_path, *, native: bool 
         device = _native_device(tmp_path)
         device_target = device.target_url
 
-    # **Two ports, and only one is asked for.** `serve` binds the panels on
-    # `--port` and gRPC on one above it, so what this needs is a port whose
-    # successor is also free — not two ports that merely differ.
-    port = free_port_with_a_free_successor()
-    address = f"127.0.0.1:{grpc_port_for(port)}"
+    # One port: the panels, gRPC and gRPC-Web are all on `--port`.
+    port = free_port()
+    address = f"127.0.0.1:{port}"
     log = tmp_path / "statemachined.log"
     with log.open("w") as sink:
         proc = subprocess.Popen(
@@ -614,6 +572,9 @@ def _spawned_executor(request: pytest.FixtureRequest, tmp_path, *, native: bool 
                 "127.0.0.1",
                 "--port",
                 str(port),
+                # `--rig-config` since the rename; the pinned 0.3.0-alpha1 knows
+                # only `--config`, and newer daemons still accept it, hidden.
+                # Spell it `--rig-config` when the pin moves.
                 "--config",
                 str(_rig_config(device_target, tmp_path)),
                 # A test run must not advertise itself to the lab as a rig.
@@ -797,3 +758,120 @@ def confirm(request: pytest.FixtureRequest):
             pytest.fail(f"the operator said no: {question}")
 
     return ask
+
+
+# ── mousewheeld ───────────────────────────────────────────────────────────────
+
+#: Two zone sets the wheel fixture's store starts with. `fixed` has literal
+#: bounds, so it arms with nothing more than its name, which is all triald
+#: sends today. `parameterised` needs a per-trial `$goal_cm` and must be refused
+#: naming it rather than armed with a zero.
+WHEEL_ZONE_SETS = {
+    "fixed": {
+        "zone_set_version": 1,
+        "zones": [
+            {
+                "name": "goal",
+                "shape": "rect",
+                "axes": ["wheel"],
+                "metric": "displacement",
+                "min_cm": [100.0],
+                "max_cm": [None],
+                "fire": "once",
+                "output": {"line": "zone_goal", "action": "pulse", "ms": 10},
+            }
+        ],
+    },
+    "parameterised": {
+        "zone_set_version": 1,
+        "zones": [
+            {
+                "name": "goal",
+                "shape": "rect",
+                "axes": ["wheel"],
+                "metric": "displacement",
+                "min_cm": ["$goal_cm"],
+                "max_cm": [None],
+                "fire": "once",
+                "output": {"line": "zone_goal", "action": "pulse", "ms": 10},
+            }
+        ],
+    },
+}
+
+#: The rig config the wheel fixture runs on: one axis and the one line the
+#: zone sets above name. No `[device] port`, because `--simulate` is the board.
+WHEEL_RIG_CONFIG = """\
+[[axis]]
+name = "wheel"
+counts_per_cm = 86.920
+counts_per_rev = 4096
+diameter_cm = 15.0
+
+[[line]]
+name = "zone_goal"
+index = 0
+pin = 5
+"""
+
+
+def _mousewheeld_command() -> str:
+    """The daemon: `MOUSEWHEELD_BINARY` (`make test-local`), else on PATH (the `.deb`)."""
+    override = os.environ.get("MOUSEWHEELD_BINARY")
+    if override:
+        if not pathlib.Path(override).is_file():
+            pytest.fail(f"MOUSEWHEELD_BINARY is set to {override}, which does not exist")
+        return override
+    found = shutil.which("mousewheeld")
+    if found:
+        return found
+    pytest.skip("no mousewheeld: set MOUSEWHEELD_BINARY, or install the .deb")
+
+
+@pytest.fixture
+def wheel(tmp_path):
+    """A mousewheeld of this test's own, with a simulated wheel, and its client."""
+    mousewheeld = pytest.importorskip("mousewheeld", reason="mousewheeld-client is not installed")
+
+    store = tmp_path / "wheel-store"
+    (store / "zone-sets").mkdir(parents=True)
+    for name, zone_set in WHEEL_ZONE_SETS.items():
+        (store / "zone-sets" / f"{name}.json").write_text(json.dumps(zone_set, indent=2))
+    rig_config = tmp_path / "mousewheeld-rig-config.toml"
+    # A segment name of this test's own, so two runs cannot share one.
+    rig_config.write_text(
+        WHEEL_RIG_CONFIG + f'\n[publish]\nshm_name = "/e2e_wheel_{os.getpid()}"\n'
+    )
+
+    port = free_port()
+    command = [
+        _mousewheeld_command(),
+        "serve",
+        "--simulate",
+        "--bind", "127.0.0.1",
+        "--port", str(port),
+        "--rig-config", str(rig_config),
+        "--storage-dir", str(store),
+    ]
+    # 0.3.0-alpha1 predates the flag, and advertising from a test is harmless
+    # there; a newer one must not tell the lab a test run is a rig.
+    help_text = subprocess.run(
+        [command[0], "serve", "--help"], capture_output=True, text=True
+    ).stdout
+    if "--no-mdns" in help_text:
+        command.append("--no-mdns")
+
+    log = tmp_path / "mousewheeld.log"
+    with log.open("w") as sink:
+        proc = subprocess.Popen(command, stdout=sink, stderr=subprocess.STDOUT)
+    client = mousewheeld.MousewheeldClient(f"127.0.0.1:{port}")
+    try:
+        client.wait_until_ready(timeout_s=15)
+    except Exception:
+        _stop(proc)
+        pytest.fail(f"mousewheeld did not come up:\n{log.read_text()}")
+    try:
+        yield {"address": f"127.0.0.1:{port}", "client": client, "log": log}
+    finally:
+        client.close()
+        _stop(proc)

@@ -4,6 +4,7 @@
 VSTIMD        ?= ../../vstimd
 STATEMACHINED ?= ../../statemachined
 TRIALD        ?= ../../triald
+MOUSEWHEELD   ?= ../../mousewheeld
 
 IMAGE ?= braemons-e2e-tests
 
@@ -34,21 +35,23 @@ test: artifacts ## install the packages in a container, configure, run
 # runs this target, so nothing else can notice.
 CHECKOUTS = \
 	$(TRIALD)/daemon/pyproject.toml \
-	$(STATEMACHINED)/daemon-rs/Cargo.toml \
+	$(STATEMACHINED)/daemon/Cargo.toml \
 	$(STATEMACHINED)/client/python/pyproject.toml \
-	$(VSTIMD)/client/python/pyproject.toml
+	$(VSTIMD)/client/python/pyproject.toml \
+	$(MOUSEWHEELD)/daemon/Cargo.toml \
+	$(MOUSEWHEELD)/client/python/pyproject.toml
 
 check-checkouts:
 	@missing=""; for f in $(CHECKOUTS); do [ -f "$$f" ] || missing="$$missing  $$f"; done; \
 	if [ -n "$$missing" ]; then \
-	  echo "make test-local needs three checkouts beside this one, and cannot find:"; \
+	  echo "make test-local needs four checkouts beside this one, and cannot find:"; \
 	  echo "$$missing" | tr ' ' '\n' | grep -v '^$$' | sed 's/^/  /'; \
 	  echo ""; \
-	  echo "Point them at yours: make test-local VSTIMD=... STATEMACHINED=... TRIALD=..."; \
+	  echo "Point them at yours: make test-local VSTIMD=... STATEMACHINED=... TRIALD=... MOUSEWHEELD=..."; \
 	  exit 1; \
 	fi
 
-test-local: check-checkouts ## against local checkouts (VSTIMD, STATEMACHINED, TRIALD)
+test-local: check-checkouts ## against local checkouts (VSTIMD, STATEMACHINED, TRIALD, MOUSEWHEELD)
 	uv sync --quiet --group dev
 	@# **The override is what makes "all local" possible.** triald declares
 	@# `statemachined-client` as a git URL, and installing that same
@@ -69,12 +72,17 @@ test-local: check-checkouts ## against local checkouts (VSTIMD, STATEMACHINED, T
 	uv pip install --quiet --overrides .local-overrides.txt \
 		-e "$(TRIALD)/daemon[serve]" \
 		-e $(STATEMACHINED)/client/python \
-		-e $(VSTIMD)/client/python
+		-e $(VSTIMD)/client/python \
+		-e $(MOUSEWHEELD)/client/python
 	@# An environment from before this installed the Python daemon, whose
 	@# console script `uv run` would put ahead of the Rust one on PATH.
 	uv pip uninstall --quiet statemachined 2>/dev/null || true
 	$(MAKE) -C $(STATEMACHINED) rust integration-device
+	@# mousewheeld is Rust too, and runs with --simulate: a wheel on a thread
+	@# behind a real pty, so the daemon's link code is what runs.
+	cargo build --quiet --release --manifest-path $(MOUSEWHEELD)/Cargo.toml -p mousewheeld
 	VSTIMD_BINARY=$(abspath $(VSTIMD))/target/release/vstimd \
+	MOUSEWHEELD_BINARY=$(abspath $(MOUSEWHEELD))/target/release/mousewheeld \
 	STATEMACHINED_NATIVE_DEVICE=$(abspath $(STATEMACHINED))/build/statemachined_native_device \
 	PATH=$(abspath $(STATEMACHINED))/target/debug:$$PATH \
 	uv run --group dev --no-sync pytest -v $(ARGS)

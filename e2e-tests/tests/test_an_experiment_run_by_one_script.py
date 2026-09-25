@@ -156,9 +156,9 @@ def test_a_session_run_as_a_program_leaves_a_record_of_every_trial(
     # and as long as the trial the device timed.
     for earlier, later in itertools.pairwise(records):
         assert later["stimulus_on_frame"] >= earlier["stimulus_off_frame"]
-    from vstimd import Connection
+    from vstimd_client_class import VstimdClient
 
-    with Connection(display["address"], recv_timeout_s=10.0) as renderer:
+    with VstimdClient(display["address"], recv_timeout_s=10.0) as renderer:
         hz = renderer.system.query_server_info().frame_rate_hz
     for record in records:
         shown = record["stimulus_off_frame"] - record["stimulus_on_frame"]
@@ -177,9 +177,9 @@ def test_the_script_leaves_the_rig_as_it_found_it(display, executor, tmp_path):
     condition active or a trial armed would break the next person's session
     with an error about something else.
     """
-    from vstimd import Connection
+    from vstimd_client_class import VstimdClient
 
-    with Connection(display["address"], recv_timeout_s=10.0) as renderer:
+    with VstimdClient(display["address"], recv_timeout_s=10.0) as renderer:
         before = {s.name for s in renderer.system.list_stimuli()}
 
     subprocess.run(
@@ -204,7 +204,7 @@ def test_the_script_leaves_the_rig_as_it_found_it(display, executor, tmp_path):
         timeout=60,
     )
 
-    with Connection(display["address"], recv_timeout_s=10.0) as renderer:
+    with VstimdClient(display["address"], recv_timeout_s=10.0) as renderer:
         assert {s.name for s in renderer.system.list_stimuli()} == before
         assert renderer.conditions.active == 0
     assert not executor.client.read_state().running

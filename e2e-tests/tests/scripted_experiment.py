@@ -294,14 +294,14 @@ class Experiment:
         window_ms: int = 300,
         seed: int | None = None,
     ) -> None:
-        from vstimd import Connection
+        from vstimd_client_class import VstimdClient
         from vstimd.events import EventSubscriber, Topic
 
         self.seed = seed if seed is not None else random.randrange(2**31)
         self.rng = random.Random(self.seed)
         self.window_ms = window_ms
         self.machine = StateMachine(executor_address)
-        self.renderer = Connection(renderer_address, recv_timeout_s=10.0)
+        self.renderer = VstimdClient(renderer_address, recv_timeout_s=10.0)
         host = renderer_address.split("://", 1)[-1].rsplit(":", 1)[0]
         self.events = EventSubscriber(
             host, event_port, topic=[Topic.COMMAND_APPLIED, Topic.FRAME_DROPPED]
@@ -553,9 +553,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--renderer", default="tcp://127.0.0.1:5555")
     parser.add_argument("--event-port", type=int, default=5556)
-    # statemachined's **gRPC** port, which is one above the port its panels are
-    # served on. A person types 8081 into a browser; a client connects to 8082.
-    parser.add_argument("--executor", default="127.0.0.1:8082")
+    # statemachined's port: the panels, gRPC and gRPC-Web are all on it.
+    parser.add_argument("--executor", default="127.0.0.1:8081")
     parser.add_argument("--trials", type=int, default=12)
     parser.add_argument("--first-trial-id", type=int, default=1)
     parser.add_argument("--seed", type=int, default=None)

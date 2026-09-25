@@ -119,15 +119,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Asked over gRPC, on 8082 -- one above `--port 8081`, which the daemon answers
-# on as well, and where the family's clients dial it; see
-# contracts/DAEMON_LAYOUT.md.
+# Asked over gRPC, on 8081 -- the one port the daemon serves the panels, gRPC
+# and gRPC-Web on; see contracts/DAEMON_LAYOUT.md.
 for _ in $(seq 30); do
   if /opt/e2e-tests/bin/python -c "
 import sys
 from statemachined_client import StatemachinedClient
 try:
-    with StatemachinedClient('127.0.0.1:8082') as rig:
+    with StatemachinedClient('127.0.0.1:8081') as rig:
         rig.wait_until_ready(timeout_s=1)
         health = rig.read_health()
         # Up *and* holding the board: a daemon that is up with no device

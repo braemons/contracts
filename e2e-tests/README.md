@@ -1,8 +1,8 @@
 # e2e-tests/ — the tests that belong to no daemon
 
 The dynamic half of this repository. `INTERACTIONS.md` writes down what the
-daemons promise each other and `check_outcomes.py` proves each repo's sources
-still say it; these tests run all three and watch them do it.
+daemons promise each other and each repo's `make check-proto` holds its sources
+to its vendored `braemons/v1/`; these tests run all three and watch them do it.
 
 vstimd renders. statemachined runs a trial's state machine. triald decides what a
 trial is and what its outcome was. Each has its own suite, and each of those
@@ -123,13 +123,12 @@ imports. Reaching into it as a library exercises a path no operator has, and it
 also quietly avoided the real client: `StateMachineExecutor` runs over a real
 channel, the way it ships.
 
-**Two ports.** `statemachined serve --port 8081` serves the panels there and
-answers gRPC on 8082 as well. The Python daemon it replaced needed the second
-port because `grpc.aio` owns its port outright; the Rust one keeps it so that
-no client had to change at the cutover. `--executor` names the *panels'* port — the one
-a person types into a browser — and the fixtures do the arithmetic, in one
-place, written out rather than imported so that this suite can catch the two
-sides disagreeing. `contracts/DAEMON_LAYOUT.md` has the family's allocation.
+**One port.** `statemachined serve --port 8081` serves the panels, gRPC and
+gRPC-Web there. The Python daemon it replaced needed a second port for gRPC,
+one above, because `grpc.aio` owns its port outright; the Rust one kept
+answering there too for the cutover, and no longer does. `--executor` is the
+port a person types into a browser, and it is the port a client dials.
+`contracts/DAEMON_LAYOUT.md` has the family's allocation.
 
 **A subscription carries the ring's backlog.** The WebSocket began at the
 newest entry; `WatchTrace` starts wherever it is told and defaults to the
@@ -147,3 +146,14 @@ make test-local   # against local checkouts (VSTIMD, STATEMACHINED, TRIALD)
 ```
 
 From the repository root, `make e2e` does the same.
+
+## mousewheeld
+
+`tests/test_a_zone_set_armed_by_triald.py` runs triald's zone arming (interaction
+D, `INTERACTIONS.md` §3) against a real mousewheeld with `--simulate`: a wheel
+on a thread behind a real pty, so the daemon's link code is what runs. It needs
+a triald with `mousewheel_zone_set`, which the pinned 0.3.0-alpha2 is not, so
+under `make test` it skips and under `make test-local` it runs, with
+`MOUSEWHEELD` naming the checkout. It joins `rig_versions.toml` with the next
+triald release. The mousewheeld repository is private, so `fetch_artifacts.py`
+will need `gh` logged in with access to it.

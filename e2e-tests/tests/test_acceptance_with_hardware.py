@@ -51,9 +51,9 @@ def observer(display):
 
 @pytest.fixture
 def renderer(display):
-    from vstimd import Connection
+    from vstimd_client_class import VstimdClient
 
-    with Connection(display["address"], recv_timeout_s=10.0) as connection:
+    with VstimdClient(display["address"], recv_timeout_s=10.0) as connection:
         yield connection
 
 

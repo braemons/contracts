@@ -54,9 +54,9 @@ def test_all_three_are_up_and_none_of_them_knows_the_others(display, armed_execu
     no configuration on either naming anything else. If this ever needs a
     setting pointing one daemon at another, the architecture changed.
     """
-    from vstimd import Connection
+    from vstimd_client_class import VstimdClient
 
-    with Connection(display["address"], recv_timeout_s=10.0) as renderer:
+    with VstimdClient(display["address"], recv_timeout_s=10.0) as renderer:
         # Every response carries the current frame count; `wait_for_frames(0)`
         # is the cheapest way to ask for one without changing anything.
         assert renderer.system.wait_for_frames(0).frame_count > 0, (
@@ -92,13 +92,13 @@ def test_the_frame_a_command_lands_on_is_the_frame_the_event_reports(display):
     So this asserts the relationship rather than trusting it, and will fail the
     day it changes.
     """
-    from vstimd import Connection
+    from vstimd_client_class import VstimdClient
     from vstimd.events import EventSubscriber, Topic
     from vstimd.stimuli import RectParams
 
     with EventSubscriber("127.0.0.1", display["event_port"], topic=Topic.COMMAND_APPLIED) as events:
         time.sleep(0.5)  # PUB discards anything sent before a subscription lands
-        with Connection(display["address"], recv_timeout_s=10.0) as renderer:
+        with VstimdClient(display["address"], recv_timeout_s=10.0) as renderer:
             handle = renderer.stimuli.shapes.create_rect(
                 params=RectParams(width_px=40, height_px=40)
             )
@@ -133,7 +133,7 @@ def test_a_trial_runs_on_one_daemon_and_is_bounded_by_frames_from_another(displa
     from triald.api.statemachine_executor import StateMachineExecutor
     from triald.api.stimulus_subscriber import StimulusObserver, connect
     from triald.executor import TrialConfiguration
-    from vstimd import Connection
+    from vstimd_client_class import VstimdClient
     from vstimd.stimuli import RectParams
 
     observer = StimulusObserver(connect("127.0.0.1", display["event_port"]))
@@ -142,7 +142,7 @@ def test_a_trial_runs_on_one_daemon_and_is_bounded_by_frames_from_another(displa
     executor = StateMachineExecutor(armed_executor.address)
 
     try:
-        with Connection(display["address"], recv_timeout_s=10.0) as renderer:
+        with VstimdClient(display["address"], recv_timeout_s=10.0) as renderer:
             # The stimulus goes up, and the frame it went up on opens the window.
             stimulus = renderer.stimuli.shapes.create_rect(
                 params=RectParams(width_px=60, height_px=60)
@@ -240,7 +240,7 @@ def test_two_trials_keep_their_own_frames_and_their_own_outcomes(display, armed_
     from triald.api.statemachine_executor import StateMachineExecutor
     from triald.api.stimulus_subscriber import StimulusObserver, connect
     from triald.executor import TrialConfiguration
-    from vstimd import Connection
+    from vstimd_client_class import VstimdClient
 
     observer = StimulusObserver(connect("127.0.0.1", display["event_port"]))
     observer.start()
@@ -251,7 +251,7 @@ def test_two_trials_keep_their_own_frames_and_their_own_outcomes(display, armed_
     # weeks, and a trial id is its key. See scenarios.unique_trial_id.
     trial_ids = [scenarios.unique_trial_id(), scenarios.unique_trial_id()]
     try:
-        with Connection(display["address"], recv_timeout_s=10.0) as renderer:
+        with VstimdClient(display["address"], recv_timeout_s=10.0) as renderer:
             for trial_id in trial_ids:
                 first_frame = renderer.system.wait_for_frames(0).frame_count
                 observer.open_window(first_frame=first_frame)
@@ -466,13 +466,13 @@ def test_the_graph_the_acceptance_suite_needs_a_wire_for_uploads_and_runs(
     """
     from triald.api.statemachine_executor import StateMachineExecutor
     from triald.api.stimulus_subscriber import StimulusObserver, connect
-    from vstimd import Connection
+    from vstimd_client_class import VstimdClient
 
     scenarios.upload(executor, scenarios.graph_waiting_for_a_lever("lever", timeout_ms=200))
     observer = StimulusObserver(connect("127.0.0.1", display["event_port"]))
     observer.start()
     try:
-        with Connection(display["address"], recv_timeout_s=10.0) as renderer:
+        with VstimdClient(display["address"], recv_timeout_s=10.0) as renderer:
             ran = scenarios.run_one_trial(
                 display_connection=renderer,
                 executor_client=executor,
