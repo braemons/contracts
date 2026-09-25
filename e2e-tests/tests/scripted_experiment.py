@@ -294,8 +294,8 @@ class Experiment:
         window_ms: int = 300,
         seed: int | None = None,
     ) -> None:
-        from vstimd_client_class import VstimdClient
-        from vstimd.events import EventSubscriber, Topic
+        from vstimd_client import VstimdClient
+        from vstimd_client.events import EventSubscriber, Topic
 
         self.seed = seed if seed is not None else random.randrange(2**31)
         self.rng = random.Random(self.seed)
@@ -328,8 +328,8 @@ class Experiment:
         )
         self.machine.upload_graph_set(["detect", "catch"])
 
-        from vstimd.stimuli import RectParams
-        from vstimd.stimuli.stimuli_models import Vec2
+        from vstimd_client.stimuli import RectParams
+        from vstimd_client.stimuli.stimuli_models import Vec2
 
         shapes = self.renderer.stimuli.shapes
         fixation = shapes.create_rect(name="fixation", params=RectParams(width_px=12, height_px=12))

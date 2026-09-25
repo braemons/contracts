@@ -12,12 +12,10 @@
 
 [vstimd]
 repo = "braemons/vstimd"
-tag = "v0.3.0-alpha2"
-# `0.3.0.alpha2` in the filename, `0.3.0~alpha2` in the package metadata: GitHub
+tag = "v0.3.0-alpha3"
+# `0.3.0.alpha3` in the filename, `0.3.0~alpha3` in the package metadata: GitHub
 # writes a '.' where dpkg and rpm want the '~' that sorts a pre-release first.
-# alpha2 because alpha1's release failed to build and its tag is fixed: another
-# repository builds against it.
-version = "0.3.0.alpha2"
+version = "0.3.0.alpha3"
 # The server. `braemons-` is the archive's prefix; nothing inside the package
 # carries it.
 asset = "braemons-vstimd_{version}-1_amd64.deb"
@@ -27,18 +25,18 @@ asset = "braemons-vstimd_{version}-1_amd64.deb"
 gpiochip_daqd_asset = "braemons-gpiochip-daqd_{version}-1_amd64.deb"
 # The client, from PyPI, because that is where a script's author gets it. A
 # spelling of its own: the client is versioned apart from the server, and 0.3's
-# is `0.3.0a1`.
+# is `0.3.0a2`.
 pypi = "vstimd-client"
-pypi_version = "0.3.0a1"
+pypi_version = "0.3.0a2"
 
 [statemachined]
 repo = "braemons/statemachined"
-tag = "v0.3.0-alpha1"
-# Note the spelling. The package version is `0.3.0~alpha1` -- the '~' is what
+tag = "v0.3.0-alpha2"
+# Note the spelling. The package version is `0.3.0~alpha2` -- the '~' is what
 # makes dpkg and rpm sort a pre-release *before* the release -- but the release
 # asset is named with a '.'. Two spellings of one version, and this is the one
 # the file is called.
-version = "0.3.0.alpha1"
+version = "0.3.0.alpha2"
 # The Rust daemon, one binary at /usr/bin/statemachined.
 asset = "braemons-statemachined_{version}-1_amd64.deb"
 # The firmware compiled for the host, a release asset of its own: the
@@ -48,7 +46,7 @@ native_device_asset = "statemachined-native-device-amd64"
 # `proto/statemachined/v1/`, a distribution of its own, published as a release
 # asset beside the packages.
 wheel = "statemachined_client-{wheel_version}-py3-none-any.whl"
-wheel_version = "0.3.0a1"
+wheel_version = "0.3.0a2"
 
 # triald is the one these tests *import* rather than run, so what it owes them is
 # a wheel -- and it publishes one beside the packages, which no other braemons
@@ -60,12 +58,24 @@ wheel_version = "0.3.0a1"
 # alpha2 because alpha1's packages failed their own check and were never released.
 [triald]
 repo = "braemons/triald"
-tag = "v0.3.0-alpha2"
-version = "0.3.0.alpha2"
+tag = "v0.3.0-alpha3"
+version = "0.3.0.alpha3"
 asset = "braemons-triald_{version}-1_amd64.deb"
 # Not on PyPI -- publishing there is a separate decision with a token behind it,
 # and nothing needs it yet. So the wheel is a release asset, fetched like the
 # .deb and installed from the same directory. `wheel_version`, not `version`,
 # because of the spelling split above.
 wheel = "triald-{wheel_version}-py3-none-any.whl"
+wheel_version = "0.3.0a3"
+
+# The wheel, run by the tests with --simulate: a wheel on a thread behind a real
+# pty, so the daemon's own link code runs. The package puts /usr/bin/mousewheeld
+# on PATH, where the `wheel` fixture finds it, and the client is a release asset
+# like statemachined's. No `-1` revision in the filename: nfpm leaves it off.
+[mousewheeld]
+repo = "braemons/mousewheeld"
+tag = "v0.3.0-alpha2"
+version = "0.3.0.alpha2"
+asset = "braemons-mousewheeld_{version}_amd64.deb"
+wheel = "mousewheeld_client-{wheel_version}-py3-none-any.whl"
 wheel_version = "0.3.0a2"

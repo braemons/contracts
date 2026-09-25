@@ -51,7 +51,7 @@ def observer(display):
 
 @pytest.fixture
 def renderer(display):
-    from vstimd_client_class import VstimdClient
+    from vstimd_client import VstimdClient
 
     with VstimdClient(display["address"], recv_timeout_s=10.0) as connection:
         yield connection
@@ -129,7 +129,7 @@ def test_the_state_machines_ttl_reaches_the_renderer(
     placed inside the trial's own frame window rather than merely "seen at some
     point".
     """
-    from vstimd.events import EventSubscriber, Topic
+    from vstimd_client.events import EventSubscriber, Topic
 
     upload(executor, graph_waiting_for_a_lever("gate", timeout_ms=1500))
 
@@ -175,7 +175,7 @@ def test_the_stimulus_was_actually_visible(executor, trial_executor, renderer, o
     is perfect. None of that is a photon. This is the only test in the repository
     that asks about one.
     """
-    from vstimd.stimuli import RectParams
+    from vstimd_client.stimuli import RectParams
 
     upload(executor, timed_graph("visible", milliseconds=1500))
     handle = renderer.stimuli.shapes.create_rect(params=RectParams(width_px=400, height_px=400))

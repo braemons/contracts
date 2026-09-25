@@ -336,8 +336,7 @@ state_machine_config_directory = "/tmp/probe/configs"
 trace_directory = "/tmp/probe/trace"
 recording_directory = "/tmp/probe/recordings"
 TOML
-# --config: the pinned 0.3.0-alpha1's spelling of --rig-config.
-/usr/bin/statemachined serve --config /tmp/probe.toml --port 8081 --no-mdns \
+/usr/bin/statemachined serve --rig-config /tmp/probe.toml --port 8081 --no-mdns \
   >/tmp/probe.log 2>&1 &
 daemon=$!
 ctl="/opt/e2e-tests/bin/statemachinectl --rig 127.0.0.1:8081"

@@ -225,7 +225,7 @@ simulator's is a rig whose data cannot be trusted.
 
 **Built, as a broadcast rather than either shape below** (§2): vstimd publishes
 frame-numbered events on its ZMQ PUB socket (`proto/vstimd/v1/events.proto`,
-port 5556), `vstimd.events` in vstimd-client subscribes, and
+port 5556), `vstimd_client.events` in vstimd-client subscribes, and
 `triald.api.stimulus_subscriber` owns the join to a trial. What follows is the
 design discussion as it stood before, kept because the recommendation —
 vstimd stays trial-blind — is what survived.
@@ -330,7 +330,7 @@ paragraph exists to prevent. triald records the hit afterwards, over E.
 | triald configures vstimd | — | ❌ neither side |
 | vstimd broadcasts frame loss | ZMQ PUB, `events.proto` | ✅ `0.2` |
 | triald joins frame loss to a trial | `triald.stimulus` | ✅ |
-| a client subscribes to the stream | `vstimd.events` (vstimd-client) | ✅ |
+| a client subscribes to the stream | `vstimd_client.events` (vstimd-client) | ✅ |
 | triald wires the two together | `triald.api.stimulus_subscriber` | ✅ (§10 item 8) |
 | readiness gate `configure→ready→start` | designed, `triald/dev/PLAN.md` | ❌ not built |
 | **F** vstimd reads a position device | `vstimd/vinput/`, `input/devices.rs`, `[[input.device]]`, `LinearNav3D` | ✅ `0.3`, consumer half |
@@ -428,7 +428,7 @@ message**, which is the whole reason §7 says no to a proto repo.
 | Fact | Today |
 |---|---|
 | the `.tdr` outcome codes | ✅ **a protobuf enum**, `braemons/v1/trial_outcome.proto`, canonical here and vendored into both daemons |
-| rig identity — a `rig=` TXT record, `sha256("braemons:" + machine-id)[:16]` | ✅ all four daemons publish it, and the console groups on it |
+| rig identity — a `rig=` TXT record, `sha256("braemons:" + machine-id)[:16]` | ✅ all four daemons publish it from inside the daemon, and the console groups on it. The box's hostname, `braemons-XXXXXX`, is `braemons-rig`'s ([braemons/rig](https://github.com/braemons/rig)), not any daemon's |
 | mDNS TXT keys — `id` `rig` `version` `elements` `port` | ✅ every daemon's SRV port is where its panels are; vstimd adds `zmq_port` and `event_port`, triald `grpc_port`, statemachined `device` and a vestigial `api` |
 | VTL bit and line semantics | already a proper in-repo contract in `vstimd/vtl/` — leave it there |
 

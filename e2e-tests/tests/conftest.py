@@ -235,7 +235,7 @@ def display(request: pytest.FixtureRequest, tmp_path_factory) -> dict:
 
 
 def _attached_display(address: str, event_port: int):
-    from vstimd_client_class import VstimdClient
+    from vstimd_client import VstimdClient
 
     try:
         with VstimdClient(address, recv_timeout_s=2.0) as probe:
@@ -272,7 +272,7 @@ def _start_display(vstimd_binary: pathlib.Path, scratch: pathlib.Path, ports=Non
     address coming back, so a subscriber that was attached to it reconnects
     rather than being handed a different rig.
     """
-    from vstimd_client_class import VstimdClient
+    from vstimd_client import VstimdClient
 
     command_port, event_port = ports or distinct_ports(2)
     log = scratch / "vstimd.log"
@@ -572,10 +572,7 @@ def _spawned_executor(request: pytest.FixtureRequest, tmp_path, *, native: bool 
                 "127.0.0.1",
                 "--port",
                 str(port),
-                # `--rig-config` since the rename; the pinned 0.3.0-alpha1 knows
-                # only `--config`, and newer daemons still accept it, hidden.
-                # Spell it `--rig-config` when the pin moves.
-                "--config",
+                "--rig-config",
                 str(_rig_config(device_target, tmp_path)),
                 # A test run must not advertise itself to the lab as a rig.
                 "--no-mdns",
@@ -831,7 +828,7 @@ def _mousewheeld_command() -> str:
 @pytest.fixture
 def wheel(tmp_path):
     """A mousewheeld of this test's own, with a simulated wheel, and its client."""
-    mousewheeld = pytest.importorskip("mousewheeld", reason="mousewheeld-client is not installed")
+    from mousewheeld_client import MousewheeldClient
 
     store = tmp_path / "wheel-store"
     (store / "zone-sets").mkdir(parents=True)
@@ -852,19 +849,14 @@ def wheel(tmp_path):
         "--port", str(port),
         "--rig-config", str(rig_config),
         "--storage-dir", str(store),
+        # A test run must not advertise itself to the lab as a rig.
+        "--no-mdns",
     ]
-    # 0.3.0-alpha1 predates the flag, and advertising from a test is harmless
-    # there; a newer one must not tell the lab a test run is a rig.
-    help_text = subprocess.run(
-        [command[0], "serve", "--help"], capture_output=True, text=True
-    ).stdout
-    if "--no-mdns" in help_text:
-        command.append("--no-mdns")
 
     log = tmp_path / "mousewheeld.log"
     with log.open("w") as sink:
         proc = subprocess.Popen(command, stdout=sink, stderr=subprocess.STDOUT)
-    client = mousewheeld.MousewheeldClient(f"127.0.0.1:{port}")
+    client = MousewheeldClient(f"127.0.0.1:{port}")
     try:
         client.wait_until_ready(timeout_s=15)
     except Exception:

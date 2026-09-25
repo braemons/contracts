@@ -140,8 +140,8 @@ done
 
 log "the daemons, as installed"
 dpkg-query -W -f='${Package} ${Version}\n' \
-  braemons-vstimd braemons-statemachined braemons-triald statemachined 2>/dev/null || true
-/opt/e2e-tests/bin/pip list 2>/dev/null | grep -iE "vstimd|triald|statemachined" || true
+  braemons-vstimd braemons-statemachined braemons-triald braemons-mousewheeld 2>/dev/null || true
+/opt/e2e-tests/bin/pip list 2>/dev/null | grep -iE "vstimd|triald|statemachined|mousewheeld" || true
 
 log "tests"
 cd /opt/e2e-tests

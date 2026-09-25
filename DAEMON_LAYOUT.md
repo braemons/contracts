@@ -106,12 +106,12 @@ Three rules that follow, and each was learned by getting it wrong:
 
 * **A client is `<Daemon>Client`** — `VstimdClient`, `MousewheeldClient`,
   `StatemachinedClient`, `TrialdClient`. vstimd's was `Connection`, from
-  before the rule; `vstimd-client` 0.3.0a1 on PyPI still spells it that way. Not `Rig`: a rig has four daemons
+  before the rule. Not `Rig`: a rig has four daemons
   on it, and a script that talks to two of them has to be able to say which is
   which. Not `Client` either, for the same reason at a call site.
 * **A type that will be imported into somebody else's namespace carries its
   subject.** `ZoneBoundReference`, not `Reference`; `BoardCapacities`, not
-  `Capacities`. `from mousewheeld import Reference` is a name collision waiting
+  `Capacities`. `from mousewheeld_client import Reference` is a name collision waiting
   for the second import line.
 * **A file is named like a class, not like a folder.** `client.py`, `types.py`
   and `cli.py` say only where they sit in a convention; `daemon_client.py`,
@@ -183,9 +183,8 @@ diverge from the conffile the next upgrade compares against.
 
 Writing it down found four things, and all four are fixed:
 
-* ~~statemachined's rig config flag was `--config`~~ — it is `--rig-config`.
-  `--config` is still accepted, hidden, only because the e2e suite pins a
-  0.3.0-alpha1 binary that knows no other spelling; it goes when that pin moves.
+* ~~statemachined's rig config flag was `--config`~~ — it is `--rig-config`,
+  and `--config` is gone.
 * ~~triald's `--config` was the *session* config~~ — it is `--session-config`.
 * ~~mousewheeld's storage directory defaulted to `/var/lib/mousewheeld`~~ — it
   is `/var/lib/braemons/mousewheeld`, like every other daemon's.
@@ -195,15 +194,13 @@ Writing it down found four things, and all four are fixed:
   `examples/session-config.json`. A set or a setting changed over the API is
   still not written back to it.
 
-And one that the rule below forbids and the code does:
-
-* **mousewheeld writes its rig config back to `/etc/braemons`.**
-  `Config/PatchConfig`, `Calibration/ReplaceCalibration` and
-  `Calibration/ApplyMeasurement` all end in `save_config()`, and its unit grants
-  `ReadWritePaths=/etc/braemons` for it. The calibration is the hard case: it
-  is measured over the API, it is a fact about the box, and it has to survive a
-  restart. Where it lives instead — a file under `/var/lib/braemons/mousewheeld`
-  that overrides the conffile's, most likely — is undecided.
+* ~~mousewheeld wrote its rig config back to `/etc/braemons`~~. A calibration
+  measured over the API is a fact about the box, and it has to survive a
+  restart. It is now kept in `/var/lib/braemons/mousewheeld/calibration.toml`
+  and applied over the rig config's values at start. The rig config is read
+  only, and the unit no longer grants write access to `/etc/braemons`. A
+  patched setting (`Config/PatchConfig`) lasts until the daemon restarts, like
+  triald's settings changed over the API.
 
 ## 2.1 Protobuf on every wire — the rule, and where the family stands
 
@@ -251,15 +248,105 @@ out of line with this document.
 
 | daemon | control plane | events | browser | board link | release |
 |---|---|---|---|---|---|
-| **vstimd** | protobuf over ZMQ | protobuf over ZMQ | protobuf over a WebSocket | — | `v0.3.0-alpha2`; ZMQ is its transport by design (§6) |
-| **mousewheeld** | gRPC | gRPC streams | gRPC-Web (`tonic-web`) | protobuf + nanopb | `v0.3.0-alpha1` |
-| **statemachined** | gRPC | gRPC streams | gRPC-Web (`tonic-web`) | protobuf + nanopb | `v0.3.0-alpha1`, the Rust daemon |
-| **triald** | gRPC | gRPC streams | gRPC-Web, binary, on a second port (Python) | — | `v0.3.0-alpha2` |
+| **vstimd** | protobuf over ZMQ | protobuf over ZMQ | protobuf over a WebSocket | — | `v0.3.0-alpha3`; ZMQ is its transport by design (§6) |
+| **mousewheeld** | gRPC | gRPC streams | gRPC-Web (`tonic-web`) | protobuf + nanopb | `v0.3.0-alpha2` |
+| **statemachined** | gRPC | gRPC streams | gRPC-Web (`tonic-web`) | protobuf + nanopb | `v0.3.0-alpha2`, the Rust daemon |
+| **triald** | gRPC | gRPC streams | gRPC-Web, binary, on a second port (Python) | — | `v0.3.0-alpha3` |
 
 The e2e suite (`e2e-tests/`) pins these releases and its `make test` is green
 on them. A daemon that takes JSON onto a wire again is out of line with this
 section, and so is a new one that arrives without all three of the shipping
 table's columns.
+
+### The command-line client is `<name>ctl`, and all four behave alike
+
+Every Python client installs one command. The four follow the same rules, so a
+person who knows one knows the other three, and a shell script can drive all
+four with the same handling:
+
+| daemon | distribution | import | command | port it dials |
+|---|---|---|---|---|
+| **vstimd** | `vstimd-client` | `vstimd_client` | `vstimctl` | 5555 (ZMQ) |
+| **mousewheeld** | `mousewheeld-client` | `mousewheeld_client` | `mousewheelctl` | 8083 |
+| **statemachined** | `statemachined-client` | `statemachined_client` | `statemachinectl` | 8081 |
+| **triald** | `triald-client` | `triald_client` | `trialctl` | 8421 |
+
+1. **The command is the daemon's name without the `d`, plus `ctl`.** It is
+   never the daemon's own name: both are installed on a rig box, and two
+   programs answering to one word is a bug report about the wrong one.
+2. **The import is `<daemon>_client`**, never the daemon's name, which a
+   Python daemon owns. The command lives in
+   `<daemon>_client/command_line_interface`. The script entry point is its
+   `main(argv=None) -> int`, and the int it returns is the exit status.
+3. **One way to say which daemon.** Use `--rig HOST[:PORT]`. Without it, the
+   command reads `$BRAEMONS_RIG`, and without that it uses `localhost`. A
+   missing port becomes this daemon's port from the table. That means one
+   `BRAEMONS_RIG=rig-a.local` reaches all four daemons on a box, so put a host
+   in it, never a port. `--timeout SECONDS` (default 5) sets how long to wait
+   for the daemon to answer. A command never browses mDNS to guess a rig.
+   Finding rigs is the console's job, and `vstimctl discover` lists them.
+4. **`-V`/`--version`** prints `<name>ctl <client version>`.
+5. **Standard output is JSON.**
+   - A command prints one indented document.
+   - A stream (`watch`, or a `--follow`) prints one compact object per line,
+     flushed as it goes, until Ctrl-C.
+   - `watch --summary` is the one human-readable form.
+   - `get` on a document store prints the document's own text as the daemon
+     stores it, so `get NAME > file` and `put file` round-trip.
+6. **Failures go to standard error, as one JSON object**:
+   `{"error": …, "detail": …}`, plus whatever else the daemon said. `error`
+   is the short kind that a script switches on. `detail` is the sentence for
+   a person. The exit status is one of these:
+
+   | status | meaning |
+   |---|---|
+   | 0 | done |
+   | 1 | anything the others do not cover |
+   | 2 | the command line was wrong |
+   | 3 | unavailable: nothing answered within `--timeout` |
+   | 4 | timed out: the daemon answered, the call did not finish |
+   | 5 | refused: the daemon answered, and the answer was no |
+   | 6 | not found: the daemon has no such thing |
+   | 130 | interrupted (Ctrl-C) |
+
+7. **The same verbs for the same things.**
+   - Every command has `state` (one snapshot of what is true now) and `watch`
+     (the stream of it).
+   - A document store is a plural noun. Its verbs are `list`, `get NAME`,
+     `put FILE [--name NAME]`, `rm NAME`, `check NAME` and `load NAME`, each
+     where the daemon can do it: mousewheeld cannot delete a zone set, and
+     triald's sets are edited in its panels, not uploaded as files. The noun is `graphs` or `configs` on
+     statemachined, `sets` on mousewheeld and triald, and `scene-configs` on
+     vstimd.
+   - `put` names the document after the file's stem unless `--name` says
+     otherwise. `put -` reads standard input and needs `--name`.
+   - Anything else is the daemon's own vocabulary, under its own name.
+8. **A command is a view onto the client and holds no logic.** Anything
+   `<name>ctl` can do, `<Daemon>Client` can do from a script. A decision the
+   command made would be a second opinion that no script can reproduce.
+9. **The daemon's `.deb` does not ship its command.** The rig's
+   `braemons-tools` package ([braemons/rig](https://github.com/braemons/rig))
+   installs all four commands into one environment. A workstation gets them
+   with `pip install <daemon>-client`.
+
+### The rig is a package of its own, and no daemon depends on it
+
+What a box needs because it is a braemons rig, whichever daemons it runs, is
+in [braemons/rig](https://github.com/braemons/rig) and nowhere else:
+
+| package | what it is |
+|---|---|
+| `braemons-rig` | the box's hostname, `braemons-XXXXXX` from the MAC, set at boot; `/etc/braemons` and `/var/lib/braemons` |
+| `braemons-tools` | the four `<name>ctl` commands, in one vendored Python |
+| `braemons` | depends on the two above, and recommends the four daemons |
+
+- **A daemon's package never depends on these.** A box that runs only
+  statemachined installs `braemons-statemachined` and works. It keeps its
+  stock hostname, and it gets its command with `pip install`.
+- **A daemon advertises itself.** Each one registers `_<daemon>._tcp` over
+  mDNS from inside the process, with the ports it actually bound, and
+  withdraws it when it stops. `--no-mdns` turns that off. No daemon ships an
+  Avahi service file, and none renames the box. vstimd did both until 0.3.
 
 ## 2. The interface is proto
 
@@ -323,10 +410,9 @@ because that is the family's rule that a quantity names its unit.
 traded deliberately: every daemon ships a client library and a CLI, and those
 are the supported way in. A rig at three in the morning is reached with the
 daemon's own CLI rather than by hand-writing a request — **once the CLI is on
-the rig, which today it is not**: no daemon's `.deb` installs its client, so
-the CLIs (`vstimd-client`, `mousewheel`, `statemachinectl`, `trialctl`, four
-spellings) are a `pip install` away. Packaging them, and one spelling, is
-open.
+the rig**, which `braemons-tools` does. There is one spelling, `<name>ctl`
+(`vstimctl`, `mousewheelctl`, `statemachinectl`, `trialctl`), and one set of
+rules for all four commands, listed under "What every daemon has".
 
 **A browser reaches a daemon through gRPC-Web**, translated in process by
 `tonic-web` — no proxy, no second daemon, no second port. The panels get a

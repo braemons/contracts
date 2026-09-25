@@ -8,24 +8,15 @@ client, not what triald believes it sent.
 
 **What is not here is E**, the path back into the record: mousewheeld has no
 marks or path ring yet (its `dev/PLAN.md` M2).
-
-Needs a triald with `mousewheel_zone_set`, which the pinned 0.3.0-alpha2 does
-not have, so under `make test` this file skips; `make test-local` runs it.
 """
 
 from __future__ import annotations
 
 import pytest
-
-pytest.importorskip(
-    "triald.api.mousewheel_zone_arming",
-    reason="the installed triald predates mousewheel_zone_set (0.3.0-alpha2)",
-)
-
-from triald.api.mousewheel_zone_arming import MousewheelZoneArming  # noqa: E402
-from triald.executor import ExecutorError  # noqa: E402
-from triald.session import Session, SessionConfig  # noqa: E402
-from triald.trialtypes import TrialType, TrialTypeSet, TrialTypeStore  # noqa: E402
+from triald.api.mousewheel_zone_arming import MousewheelZoneArming
+from triald.executor import ExecutorError
+from triald.session import Session, SessionConfig
+from triald.trialtypes import TrialType, TrialTypeSet, TrialTypeStore
 
 
 def a_session_whose_trials_arm(zone_set: str) -> Session:
@@ -48,7 +39,8 @@ def test_the_trial_types_zone_set_is_what_mousewheeld_arms(wheel):
     spec = a_session_whose_trials_arm("fixed").next_trial()
     assert spec.mousewheel_zone_set == "fixed"
 
-    MousewheelZoneArming(wheel["address"]).arm_for_trial(spec.trial_number, spec.mousewheel_zone_set)
+    arming = MousewheelZoneArming(wheel["address"])
+    arming.arm_for_trial(spec.trial_number, spec.mousewheel_zone_set)
 
     armed = wheel["client"].armed()
     assert armed.zone_set == "fixed"

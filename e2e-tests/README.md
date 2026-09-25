@@ -66,9 +66,10 @@ protobuf on every wire (`../DAEMON_LAYOUT.md` §2.1):
 
 | | release | what it publishes for this suite |
 |---|---|---|
-| vstimd | `v0.3.0-alpha2` | the server `.deb`, and `vstimd-client 0.3.0a1` on PyPI |
-| statemachined | `v0.3.0-alpha1` | the Rust daemon's `.deb` (`/usr/bin/statemachined`), `statemachined-native-device-amd64` — the firmware compiled for the host, the container's board-less far end — and the `statemachined_client` wheel this suite drives it through |
-| triald | `v0.3.0-alpha2` | the daemon `.deb`, **and a wheel** — these tests import triald rather than run it |
+| vstimd | `v0.3.0-alpha3` | the server `.deb`, and `vstimd-client 0.3.0a2` on PyPI |
+| statemachined | `v0.3.0-alpha2` | the Rust daemon's `.deb` (`/usr/bin/statemachined`), `statemachined-native-device-amd64` — the firmware compiled for the host, the container's board-less far end — and the `statemachined_client` wheel this suite drives it through |
+| triald | `v0.3.0-alpha3` | the daemon `.deb`, **and a wheel** — these tests import triald rather than run it |
+| mousewheeld | `v0.3.0-alpha2` | `braemons-mousewheeld`, whose `/usr/bin/mousewheeld` the tests run with `--simulate`, and the `mousewheeld_client` wheel |
 
 The 0.2 pins before these could not pass: statemachined `v0.2.0-alpha1` served
 HTTP and published no client, and the suite had already moved to the gRPC
@@ -151,9 +152,6 @@ From the repository root, `make e2e` does the same.
 
 `tests/test_a_zone_set_armed_by_triald.py` runs triald's zone arming (interaction
 D, `INTERACTIONS.md` §3) against a real mousewheeld with `--simulate`: a wheel
-on a thread behind a real pty, so the daemon's link code is what runs. It needs
-a triald with `mousewheel_zone_set`, which the pinned 0.3.0-alpha2 is not, so
-under `make test` it skips and under `make test-local` it runs, with
-`MOUSEWHEELD` naming the checkout. It joins `rig_versions.toml` with the next
-triald release. The mousewheeld repository is private, so `fetch_artifacts.py`
-will need `gh` logged in with access to it.
+on a thread behind a real pty, so the daemon's link code is what runs. Under
+`make test` that is the pinned `braemons-mousewheeld`; under `make test-local`
+it is the checkout `MOUSEWHEELD` names.

@@ -64,7 +64,9 @@ test-local: check-checkouts ## against local checkouts (VSTIMD, STATEMACHINED, T
 	@# So this says. The point of this target is the checkouts, and a run that
 	@# quietly fetched the *published* client while building everything else
 	@# from source would answer a question nobody asked.
-	@printf 'statemachined-client @ file://%s\n' "$(abspath $(STATEMACHINED)/client/python)" > .local-overrides.txt
+	@printf 'statemachined-client @ file://%s\nmousewheeld-client @ file://%s\n' \
+	  "$(abspath $(STATEMACHINED)/client/python)" "$(abspath $(MOUSEWHEELD)/client/python)" \
+	  > .local-overrides.txt
 	@# triald's daemon is Python, installed here with the two clients.
 	@# statemachined's daemon is Rust, like vstimd's: built in its checkout and
 	@# put first on PATH, with the firmware compiled for this host beside it
@@ -100,7 +102,8 @@ test-local: check-checkouts ## against local checkouts (VSTIMD, STATEMACHINED, T
 accept: artifacts ## the whole suite on a wired rig, with its daemons running (see WIRING.md)
 	uv sync --quiet --group dev
 	uv pip install --quiet "$$(grep '^vstimd-client' artifacts/requirements.txt)" \
-		artifacts/triald-*.whl artifacts/statemachined_client-*.whl
+		artifacts/triald-*.whl artifacts/statemachined_client-*.whl \
+		artifacts/mousewheeld_client-*.whl
 	uv run --group dev --no-sync pytest -v --hardware \
 		--display $(or $(DISPLAY_ADDR),tcp://127.0.0.1:5555) \
 		--executor $(or $(EXECUTOR),127.0.0.1:8081) \

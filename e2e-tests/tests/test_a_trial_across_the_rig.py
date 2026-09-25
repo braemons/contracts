@@ -54,7 +54,7 @@ def test_all_three_are_up_and_none_of_them_knows_the_others(display, armed_execu
     no configuration on either naming anything else. If this ever needs a
     setting pointing one daemon at another, the architecture changed.
     """
-    from vstimd_client_class import VstimdClient
+    from vstimd_client import VstimdClient
 
     with VstimdClient(display["address"], recv_timeout_s=10.0) as renderer:
         # Every response carries the current frame count; `wait_for_frames(0)`
@@ -92,9 +92,9 @@ def test_the_frame_a_command_lands_on_is_the_frame_the_event_reports(display):
     So this asserts the relationship rather than trusting it, and will fail the
     day it changes.
     """
-    from vstimd_client_class import VstimdClient
-    from vstimd.events import EventSubscriber, Topic
-    from vstimd.stimuli import RectParams
+    from vstimd_client import VstimdClient
+    from vstimd_client.events import EventSubscriber, Topic
+    from vstimd_client.stimuli import RectParams
 
     with EventSubscriber("127.0.0.1", display["event_port"], topic=Topic.COMMAND_APPLIED) as events:
         time.sleep(0.5)  # PUB discards anything sent before a subscription lands
@@ -133,8 +133,8 @@ def test_a_trial_runs_on_one_daemon_and_is_bounded_by_frames_from_another(displa
     from triald.api.statemachine_executor import StateMachineExecutor
     from triald.api.stimulus_subscriber import StimulusObserver, connect
     from triald.executor import TrialConfiguration
-    from vstimd_client_class import VstimdClient
-    from vstimd.stimuli import RectParams
+    from vstimd_client import VstimdClient
+    from vstimd_client.stimuli import RectParams
 
     observer = StimulusObserver(connect("127.0.0.1", display["event_port"]))
     observer.start()
@@ -240,7 +240,7 @@ def test_two_trials_keep_their_own_frames_and_their_own_outcomes(display, armed_
     from triald.api.statemachine_executor import StateMachineExecutor
     from triald.api.stimulus_subscriber import StimulusObserver, connect
     from triald.executor import TrialConfiguration
-    from vstimd_client_class import VstimdClient
+    from vstimd_client import VstimdClient
 
     observer = StimulusObserver(connect("127.0.0.1", display["event_port"]))
     observer.start()
@@ -466,7 +466,7 @@ def test_the_graph_the_acceptance_suite_needs_a_wire_for_uploads_and_runs(
     """
     from triald.api.statemachine_executor import StateMachineExecutor
     from triald.api.stimulus_subscriber import StimulusObserver, connect
-    from vstimd_client_class import VstimdClient
+    from vstimd_client import VstimdClient
 
     scenarios.upload(executor, scenarios.graph_waiting_for_a_lever("lever", timeout_ms=200))
     observer = StimulusObserver(connect("127.0.0.1", display["event_port"]))
