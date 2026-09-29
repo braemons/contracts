@@ -1,10 +1,11 @@
 # What a braemons daemon looks like
 
-Four repositories hold a daemon — vstimd, statemachined, triald, mousewheeld —
-and until now each was laid out however it grew. This document is the shape they
-all take, and the rule about where a daemon's public interface is written down.
+Five repositories hold a daemon — vstimd, statemachined, triald, mousewheeld,
+lickd — and until lickd each was laid out however it grew. This document is the
+shape they all take, and the rule about where a daemon's public interface is
+written down. lickd was the first built to it from the start.
 
-It is binding on those four. `console` is not a daemon and `contracts` runs
+It is binding on those five. `console` is not a daemon and `contracts` runs
 nothing, so neither is bound by it.
 
 Two claims, and the second is the one that matters:
@@ -146,6 +147,7 @@ and never by path.
 | **mousewheeld** | `mousewheeld-rig-config.toml` — the board, the rates, the shm segment | zone sets: `zone-sets/<name>.json` |
 | **triald** | `triald-rig-config.toml` — the port, the directories, the executor, and `session_config` naming the next column | the session config: the declarative settings and the trial type sets, in one file. Uploaded policies sit beside it |
 | **statemachined** | `statemachined-rig-config.toml` — the device target, the ring, the directories | state-machine configs and graphs |
+| **lickd** | `lickd-rig-config.toml` — the board, the lines, each port's pin and where its detection starts | none yet: a session patches detection over the API, and a measured sensitivity is kept in `calibration.toml` beside where the documents would go. Named detection profiles are the likely first |
 
 **Never call either of them `config` on its own.** The word alone is ambiguous
 in every one of these repositories, and the two things it could mean are the
@@ -278,7 +280,11 @@ and the family's ports were allocated one per daemon before any of them did:
 | **vstimd** | 8080 | same (`tonic-web`) | one |
 | **statemachined** | 8081 | 8082 | **two** |
 | **mousewheeld** | 8083 | same (`tonic-web`) | one |
+| **lickd** | 8084 | same (`tonic-web`) | one |
 | **triald** | 8420 | 8421 | **two** |
+
+The event streams, ZMQ PUB, take their own run of ports, after vstimd's command
+socket: vstimd 5556, mousewheeld 5557 (planned), lickd 5558.
 
 mousewheeld was 8082 and moved, because statemachined's derived port landed on
 it and a rig running both on their defaults collided. It moved rather than
@@ -417,9 +423,11 @@ deprecation to stage.
 
 ## 6. What is deliberately not uniform
 
-- **Language.** Two daemons are Rust and two are Python, and that follows the
-  work: a renderer and a serial link are not a trial policy.
-- **Firmware.** Only statemachined and mousewheeld have a board.
+- **Language.** The daemons that own hardware are Rust and triald is Python,
+  and that follows the work: a renderer and a serial link are not a trial
+  policy.
+- **Firmware.** statemachined, mousewheeld and lickd have a board; lickd's
+  firmware runs on more than one (ESP32, Uno R4), one HAL file each.
 - **Transport beyond the control plane.** §7's rule — the transport follows the
   consumer, not the family — is unchanged. Control planes are HTTP+JSON;
   high-rate streams are protobuf over ZMQ; the fast bus is shared memory.

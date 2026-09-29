@@ -67,8 +67,9 @@ Three interactions on the slow bus, and their directions are now settled:
 | **C** | vstimd ⇢ triald | **broadcast**, subscribed | every event |
 
 A fourth participant is designed but unbuilt — mousewheeld, the locomotion
-input, with rows **D**, **E** and **F** in §3. It changes nothing about the
-three above, which is the test the rule is meant to pass.
+input, with rows **D**, **E** and **F** in §3 — and a fifth is built: lickd,
+the lick detector, rows **G**, **H** and **I**. Neither changes anything about
+the three above, which is the test the rule is meant to pass.
 
 ### The rule the three now follow
 
@@ -293,6 +294,51 @@ into statemachined and daqd — the fast bus, like stimulus onset. Routing an
 outcome that must be *timed* through the slow bus is the mistake §2's last
 paragraph exists to prevent. triald records the hit afterwards, over E.
 
+### G, H, I — lickd, a fifth participant
+
+**Built** — [braemons/lickd](https://github.com/braemons/lickd), `0.3.0-alpha1`.
+lickd senses capacitive lick spouts on an ESP32 or an Uno R4, estimates a lick
+rate per spout, and holds it against a threshold. It is a **participant**: no
+client of any other daemon, no outbound call.
+
+| | | Direction | Rate |
+|---|---|---|---|
+| **G** | triald → lickd: a port's estimator, window and thresholds (`Detection.PatchDetection`), reset the counts | command, gRPC :8084 | per session, or per block |
+| **H** | lickd ⇢ triald: every lick onset and offset, every crossing, every settings change | **broadcast**, ZMQ PUB :5558, `lickd.v1.Event` | every event |
+| **I** | lickd ⇢ statemachined · the acquisition system: a lick line and a rate line per port | **fast bus**, TTL | every lick |
+
+**I carries the timing; H carries the record.** Contact, rate and threshold are
+decided on the board, in the scan that saw the reading, and the lines leave
+from there — the arrangement mousewheeld's zones and vstimd's VTL have. The
+acquisition system's recording of those edges is the precise account of every
+lick. H is the same licks, milliseconds later, for triald to keep: **every
+onset and offset is published, never decimated** (the gRPC `WatchLicks`
+monitor decimates samples, never licks).
+
+**H can be joined to I without a clock.** A `lick.onset` carries the port's
+count since the daemon started (`licks_total`), and the board's lick line
+rises once per lick, so the n-th onset on the stream is the n-th rising edge
+the acquisition system recorded on that port's line. The count survives a
+board reset; a gap in the stream is a gap in `topic_sequence`, and is also
+published as `loss.detected`.
+
+**What H is stamped with**, and why it is only half an answer (§9.8):
+
+- `host_monotonic_ns` — `CLOCK_MONOTONIC` on the host lickd runs on, mapped
+  from the board's clock by a minimum filter over sample arrivals. For an
+  onset it is **when the contact began**; `confirmed_ns` is when the board
+  decided it, which is when its TTL started (`min_contact_ms` later).
+- `device_us` — the board's own clock, as the board stamped it.
+- `sequence`, `topic_sequence` — order and loss, the vstimd convention.
+
+A recording should keep the last `settings.applied`: it says which thresholds
+every rate TTL after it was decided with.
+
+**Not yet: a backfill for H.** PUB drops for a subscriber that falls behind;
+triald sees the hole and cannot fill it. statemachined answers the same problem
+with a per-trial read of its trace; lickd would need a `Licks.ReadLicks(since
+sequence)` over a ring of recent events.
+
 ## 4. What is built
 
 | Step | Where | |
@@ -317,6 +363,12 @@ paragraph exists to prevent. triald records the hit afterwards, over E.
 | **F** vstimd reads a position device | `vstimd/vinput/`, `input/devices.rs`, `[[input.device]]`, `LinearNav3D` | ✅ `0.3`, consumer half |
 | **F** anything writes one | — | ❌ no producer exists |
 | **D**, **E** mousewheeld itself | `mousewheeld/dev/PLAN.md` | ❌ a plan, M0–M7 all open |
+| **G** triald configures lickd's detection | `lickd.v1.Detection`, `lickd_client.LickdClient` | ✅ lickd side · ❌ triald side |
+| **H** lickd publishes every lick | ZMQ PUB :5558, `lickd/proto/lickd/v1/events.proto` | ✅ `0.3.0-alpha1` |
+| **H** a client subscribes | `lickd_client.events.EventSubscriber` | ✅ |
+| **H** triald records licks and joins them to trials | — | ❌ not built |
+| **H** backfill after a gap | — | ❌ not designed |
+| **I** lick and rate TTLs from the board | `lickd/firmware/` — ESP32, Uno R4 Minima and WiFi | ✅ built · ❌ not yet run with a spout |
 
 ## 5. Three defects, all in interaction B
 
@@ -828,6 +880,44 @@ starts to earn itself**, and not before.
    says "the executor went silent", so this is a taxonomy question before it is
    a timer. Decide it before writing the timer.
 
+8. **A time axis the record can be joined on.** Precise times are the
+   acquisition system's: it records every TTL the rig's boards emit, and that
+   is the account a result is computed from. triald also collects the daemons'
+   events and records them, at lower precision, and that record has to be
+   *joinable* — to the acquisition record, and across daemons. Today each
+   daemon stamps with its own clock:
+
+   | daemon | stamps its events with |
+   |---|---|
+   | vstimd | `monotonic_us` since *its own process* started, and the display's frame index |
+   | lickd | `CLOCK_MONOTONIC` ns on its host, and the board's µs |
+   | statemachined | its board's µs within a trial (host stamps to be surveyed) |
+
+   On one host `CLOCK_MONOTONIC` would do; a rig is not always one host, and a
+   process-relative clock never does. Counting TTL edges joins a daemon to the
+   acquisition record without any clock (§3 G–I), but only for events that
+   have a line.
+
+   **The model to follow is the Lab Streaming Layer's**, whose time
+   synchronisation fits §2's rule: every producer stamps in its own monotonic
+   clock and never adjusts it; the consumer measures each producer's offset
+   NTP-style (eight round trips every few seconds, keeping the one with the
+   smallest round-trip time); the recorder writes every measurement beside the
+   data, and a linear fit per stream aligns them offline. LSL reports that as
+   well under a millisecond on a LAN, with OS timestamp jitter an order of
+   magnitude larger than the synchronisation's own.
+
+   **Decided: LSL in addition, not instead.** The braemons streams stay what
+   they are — typed protobuf, per-topic sequences that make loss visible, the
+   `.tdr` as triald's record — because those are what the daemons' contracts
+   are written in and what the join to a trial rests on. LSL is added beside
+   them as an outlet, so a rig's events and analog data (lick rates, sensor
+   readings, wheel position) land in the same XDF file as EEG or ephys when a
+   lab records that way. **Undecided:** where the outlet lives (in each daemon,
+   or one relay per rig re-publishing the ZMQ streams), and whether triald's
+   own record adopts the round-trip clock measurements (`ReadClock` in every
+   daemon, offsets in the `.tdr`) — see `LSL.md`.
+
 ## 10. Order of work
 
 | | | Blocked on |
@@ -842,6 +932,9 @@ starts to earn itself**, and not before.
 | 8 | ~~§3C: vstimd's event stream; the client subscriber; triald's join~~ **done** — `triald.api.stimulus_subscriber` closes it | — |
 | 9 | ~~**Stage 3 e2e**, and decide whether `rig-integration` exists~~ **done** — it does not: it is [`e2e-tests/`](e2e-tests/README.md), here | — |
 | 10 | ~~**§9.7: a deadline on the trial in flight in triald**~~ **done** — `NEVER_FINISHED = 11` | — |
+| 11 | triald subscribes to lickd (§3 H) and records every lick | — |
+| 12 | §9.8: a time axis the record can be joined on; LSL | a decision |
+| 13 | lickd: a backfill after a gap in H (§3 G–I) | — |
 
 **Interactions A, B and C are done, and the model closes.** triald commands its
 executor, subscribes to what it publishes, and now notices for itself when
