@@ -100,6 +100,27 @@ So: keep the braemons streams as the contract, and add LSL outlets beside them.
    the acquisition system's TTLs, this sets how much of the above is worth
    doing.
 
+## Open Ephys
+
+The Open Ephys GUI reads LSL through its **LSL Inlet** plugin
+(`open-ephys-plugins/lab-streaming-layer-io`, in the GUI's Plugin Installer):
+
+- continuous streams arrive as a data stream — lickd's rates or readings,
+  mousewheeld's position;
+- one marker stream can be selected, and it must be **single-channel and
+  irregular-rate**; a JSON file maps marker strings to TTL line numbers, so a
+  marker shows as an event on a chosen line;
+- its documentation says nothing about synchronising LSL time with the
+  acquisition clock, so markers should be taken as stamped around arrival;
+- it only receives — an outlet plugin "may be released in the future".
+
+So the division holds on an Open Ephys rig: **precise times stay on the TTL
+lines** into the acquisition board, and LSL carries the context those lines do
+not — which port, the running count, the settings in force — into the same
+recording. For the plugin as it is, an event stream should be one
+single-channel marker stream per kind of event (one for lick onsets, whose
+marker is the port's name, say), not one multi-field stream.
+
 ## First step
 
 A spike on lickd, the newest daemon and the one with both events and analog
