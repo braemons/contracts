@@ -7,6 +7,7 @@ have to agree on, and the end-to-end tests that check they do.
 |---|---|
 | [vstimd](https://github.com/braemons/vstimd) | renders stimuli; publishes what it drew on a PUB socket |
 | [statemachined](https://github.com/braemons/statemachined) | runs a trial's state machine; publishes what it did on its trace |
+| [lickd](https://github.com/braemons/lickd) | detects licks on capacitive spouts; drives TTLs and publishes every lick on a PUB socket |
 | [triald](https://github.com/braemons/triald) | decides what a trial is and records its outcome |
 | [console](https://github.com/braemons/console) | shows a rig on one screen, and decides nothing |
 
@@ -18,7 +19,8 @@ This repo runs nothing on a rig. It holds the contract the daemons meet at.
 |---|---|---|
 | **vstimd** | nobody | renders; broadcasts what it saw |
 | **statemachined** | nobody | runs a trial; writes what it did to its trace |
-| **triald** | both | commands them, and subscribes to what they publish |
+| **lickd** | nobody | detects licks; drives TTLs, broadcasts every lick |
+| **triald** | all of them | commands them, and subscribes to what they publish |
 | **console** | all of them | shows them on one screen |
 
 **A participant publishes what it observed and commands nobody; whatever runs
@@ -32,6 +34,7 @@ only the consumer that is waiting can tell "not yet" from "never".
 | | |
 |---|---|
 | [`INTERACTIONS.md`](INTERACTIONS.md) | the catalogue: every message between two daemons, its direction and payload, and what is still open |
+| [`LSL.md`](LSL.md) | the Lab Streaming Layer, added beside the braemons streams: what it adds, what it does not replace, what to settle |
 | [`DAEMON_LAYOUT.md`](DAEMON_LAYOUT.md) | the shape every daemon repository takes, and the rule that its public interface is hand-authored protobuf |
 | [`vendored/proto/`](vendored/proto/) | every daemon's `proto/`, for reading side by side — plus `braemons/v1/`, which is **canonical here** because it belongs to no one daemon. Today that is the `.tdr` outcome taxonomy, which statemachined reports in and triald records in |
 | `check_vendored_copies.py` | are the daemons' copies of `braemons/v1/` still this one? `--fix` syncs them |
